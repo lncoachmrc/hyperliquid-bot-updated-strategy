@@ -1,0 +1,15 @@
+This is a sanitized example only. It contains no real account, credentials or current market data.
+
+Portfolio Data:
+{"balance_usd": 10000.0, "open_positions": [], "drawdown_state": {"available": true, "drawdown": -0.02, "drawdown_factor": 1.0}}
+
+<context_info>
+<indicatori>
+<BTC_data>
+DEEP-RESEARCH STRATEGY SNAPSHOT:
+{"strategy_name": "donchian_tsmom_vol_target_long_bias", "status": "valid", "recommended_action": "long_candidate", "donchian_score": 1.0, "regime": "favorable", "realized_volatility_annualized": 0.42, "recommended_exchange_leverage_before_drawdown": 1, "recommended_balance_portion_before_drawdown": 0.15, "recommended_stop_loss_percent": 3.2, "invalidations": []}
+</BTC_data>
+</indicatori>
+</context_info>
+
+The live prompt is generated from system_prompt.txt at runtime.

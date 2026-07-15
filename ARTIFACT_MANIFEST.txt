@@ -1,0 +1,41 @@
+ARTIFACT MANIFEST
+=================
+
+Archive name: hyperliquid-bot-updated-strategy.zip
+Build date: 2026-07-15 (Europe/Rome)
+Project: Rizzo Trading Agent — Deep Research Strategy Edition
+Project strategy version: 1.0.0
+Original repository: Rizzo-AI-Academy/rizzo-trading-agent
+Original branch: main
+Original commit: ce86f4c717d96ab334c5872ae2eddea59e9f5ff0
+Original commit label: v 0.0.2
+
+Payload file count excluding this manifest: 35
+Payload tree SHA-256: 96779311fe403a65af00fd12e7239b54d5fc1aa91d316537fb789eb784bf3ea6
+Payload ZIP SHA-256 before adding this manifest: 94290a978b58b9ce80443496c9284d945257127a936488979d499e4c7e4ec1f8
+Final ZIP SHA-256: stored in the sibling file hyperliquid-bot-updated-strategy.zip.sha256 and in the delivery response. It cannot be embedded in the ZIP itself without changing the ZIP hash.
+
+Validation performed:
+- python -m pip install -r requirements.txt: completed
+- python -m compileall -q .: passed
+- non-live import check: passed
+- pytest -q: 23 passed, 0 failed
+- secret-pattern scan: 0 findings
+- live/testnet orders: not executed
+- main.py: not executed because it requires credentials, PostgreSQL and external APIs
+- test_trading.py: not executed because it can submit testnet orders
+
+Excluded from archive:
+- .git/
+- .env and credentials
+- virtual environments
+- __pycache__ and *.pyc
+- pytest/tool caches
+- logs and temporary files
+- market datasets
+
+Secret declaration:
+No real private key, seed phrase, wallet credential, database DSN or API key is included. Only environment-variable names and sanitized examples are present.
+
+Packaging note:
+The runtime did not expose a local Git clone. The application tree was reconstructed from the analyzed GitHub commit through the GitHub connector; .git history is intentionally absent. Architecture invariance is documented semantically and through offline tests, not claimed as full byte-for-byte repository identity.

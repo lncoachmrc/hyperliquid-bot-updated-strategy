@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import json
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+def trade_operation_schema() -> dict:
+    """Existing output contract with strategy-specific prudential bounds."""
+    return {
+        "type": "object",
+        "properties": {
+            "operation": {
+                "type": "string",
+                "description": "Type of trading operation to perform",
+                "enum": ["open", "close", "hold"],
+            },
+            "symbol": {
+                "type": "string",
+                "description": "The cryptocurrency symbol to act on",
+                "enum": ["BTC", "ETH", "SOL"],
+            },
+            "direction": {
+                "type": "string",
+                "description": (
+                    "Trade direction. The active strategy permits no new short "
+                    "positions; short is retained only for compatibility when "
+                    "closing an already existing short."
+                ),
+                "enum": ["long", "short"],
+            },
+            "target_portion_of_balance": {
+                "type": "number",
+                "description": (
+                    "Fraction of available account balance for open, or position "
+                    "fraction for close. It must not exceed the strategy snapshot."
+                ),
+                "minimum": 0,
+                "maximum": 1,
+            },
+            "leverage": {
+                "type": "integer",
+                "description": (
+                    "Integer exchange leverage. Effective fractional leverage is "
+                    "represented jointly by leverage and target balance portion."
+                ),
+                "minimum": 1,
+                "maximum": 2,
+            },
+            "stop_loss_percent": {
+                "type": "number",
+                "description": (
+                    "Stop distance percentage. Use the ATR-derived value supplied "
+                    "by the strategy snapshot; it is not a profit guarantee."
+                ),
+                "minimum": 0.5,
+                "maximum": 25,
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief explanation tied to the supplied strategy evidence",
+                "minLength": 1,
+                "maxLength": 300,
+            },
+        },
+        "required": [
+            "operation",
+            "symbol",
+            "direction",
+            "target_portion_of_balance",
+            "leverage",
+            "reason",
+            "stop_loss_percent",
+        ],
+        "additionalProperties": False,
+    }
+
+
+def previsione_trading_agent(prompt):
+    response = client.responses.create(
+        model="gpt-5.1",
+        input=prompt,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "trade_operation",
+                "strict": True,
+                "schema": trade_operation_schema(),
+            },
+            "verbosity": "medium",
+        },
+        reasoning={"effort": "medium", "summary": "auto"},
+        tools=[],
+        store=True,
+        include=[
+            "reasoning.encrypted_content",
+            "web_search_call.action.sources",
+        ],
+    )
+    return json.loads(response.output_text)
