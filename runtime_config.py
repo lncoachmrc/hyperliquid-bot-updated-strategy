@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -24,7 +25,7 @@ def env_bool(name: str, default: bool) -> bool:
     )
 
 
-def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+def env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
     raw = os.getenv(name)
     value = default if raw is None or not raw.strip() else int(raw)
 
