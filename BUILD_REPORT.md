@@ -4,87 +4,97 @@
 
 Donchian trend following / time-series momentum a bias long, su BTC, ETH e SOL prudenziale, con volatility targeting, sizing per rischio, filtri di regime/liquidità/funding/correlazione/drawdown e leva exchange massima 2×.
 
+## Hosting implementato
+
+La repository è configurata per Railway come worker persistente con PostgreSQL:
+
+- build Railpack;
+- `python -u db_init.py` come pre-deploy;
+- `python -u worker.py` come start command;
+- intervallo predefinito di 600 secondi;
+- una replica;
+- advisory lock PostgreSQL contro cicli simultanei;
+- ciclo decisionale originale eseguito tramite `main.py` in un child process.
+
 ## Commit sorgente
 
-`ce86f4c717d96ab334c5872ae2eddea59e9f5ff0` (`main`, versione dichiarata nel commit: 0.0.2).
+Repository strategica derivata dal commit originale `ce86f4c717d96ab334c5872ae2eddea59e9f5ff0` di `Rizzo-AI-Academy/rizzo-trading-agent`.
 
-## Comandi eseguiti
+## Validazione Railway/PostgreSQL
+
+La verifica è stata eseguita su una copia pulita del pacchetto strategico, sovrapponendo i file effettivamente pubblicati sul branch GitHub `main`.
 
 ```bash
-python -m pip install -r requirements.txt
 python -m compileall -q .
-OPENAI_API_KEY=test python -c "import ..."
 pytest -q
-python -m pip check
 ```
 
 ## Risultati
 
 | Controllo | Esito |
 |---|---|
-| Installazione `requirements.txt` | Superata nel runtime |
 | Compilazione Python | Superata |
-| Import moduli principali senza rete/order | Superato |
-| Test pytest offline | 23 superati, 0 falliti |
-| Test architetturali | Superati |
-| Avvio `main.py` | Non eseguito: richiede segreti, DB e API esterne |
-| `test_trading.py` | Non eseguito: può inviare ordini testnet |
+| Test pytest offline complessivi | 28 superati, 0 falliti |
+| Test strategici | Superati |
+| Test di non regressione architetturale | Superati |
+| Test Railway/PostgreSQL | 5 superati |
+| Parsing `railway.json` | Superato |
+| Worker senza chiamate dirette a LLM/executor | Verificato |
+| Advisory lock PostgreSQL presente | Verificato |
+| Placeholder segreti vuoti in `.env.example` | Verificato |
 | Ordini live/testnet | Nessuno inviato |
-| Lint Ruff/Black/Mypy | Non eseguito: tool non presenti nel progetto/runtime |
-| `pip check` globale | Due conflitti dell'ambiente preinstallato, non introdotti dal codice: Pillow/MoviePy e cryptography/PyOpenSSL |
+| Avvio Railway end-to-end | Non eseguito: richiede progetto, database e segreti dell’utente |
 
-## Test coperti
+## Test Railway coperti
 
-- canali Donchian senza barra corrente;
-- long valido;
-- regime avverso;
-- funding estremo;
-- spread estremo;
-- alta volatilità;
-- deleveraging drawdown;
-- rappresentazione 1,5× con leva intera;
-- cap SOL;
-- asset non autorizzato;
-- dati insufficienti;
-- ordine LLM → execution;
-- assenza di order placement nel modulo strategico;
-- modello/funzione LLM invariati;
-- API pubblica dell'executor;
-- schema output originale con cap 2×;
-- policy prompt e assenza di decisore parallelo.
+- builder Railpack;
+- pre-deploy PostgreSQL;
+- start command del worker;
+- replica singola e deploy senza overlap;
+- esecuzione del `main.py` originale come child process;
+- assenza nel worker di chiamate all’LLM e all’execution engine;
+- advisory lock PostgreSQL;
+- validazione delle variabili runtime;
+- assenza di valori reali nei placeholder dei segreti.
 
-## Problemi preesistenti
+## Variabili richieste su Railway
 
-- Script di test manuale dipendente da segreti.
-- Nessuna suite offline originale.
-- Dipendenza operativa da PostgreSQL e molte API.
-- `TESTNET=True` hardcoded.
-- Nessun paper mode completamente locale.
+```text
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+PRIVATE_KEY
+WALLET_ADDRESS
+OPENAI_API_KEY
+CMC_PRO_API_KEY
+BOT_INTERVAL_SECONDS=600
+BOT_RUN_IMMEDIATELY=true
+BOT_LOCK_ID=7260315
+DB_INIT_ATTEMPTS=30
+DB_INIT_RETRY_SECONDS=2
+```
+
+Il nome `Postgres` nel riferimento deve corrispondere al nome reale del servizio database Railway.
 
 ## Problemi residui
 
-1. Nessun backtest 2022–2026 incluso in questa repository.
-2. Nessuna prova end-to-end con account Hyperliquid testnet.
-3. Nessuna verifica reale di compatibilità con schema DB già in produzione.
-4. Il gross cap di portafoglio resta un vincolo impartito al decisore LLM, non un nuovo blocco deterministico, per preservare l'architettura.
-5. Lo stop può subire slippage e non modella ADL o liquidazione.
-6. La repo finale è ricostruita dai file letti su GitHub; non include `.git` né prova di identità byte-per-byte dell'intero commit.
-7. I default strategici devono essere validati con backtest, walk-forward e paper trading.
+1. Nessun backtest 2022–2026 è incluso in questa repository.
+2. Nessuna prova end-to-end è stata eseguita con un account Hyperliquid testnet e un progetto Railway reale.
+3. `TESTNET=True` resta codificato in `main.py`; il deploy non abilita la mainnet.
+4. Il file locale `account_status_old.json` non è persistenza durevole: può essere ricreato o perso durante un redeploy; gli snapshot principali restano invece in PostgreSQL.
+5. `main.py` intercetta internamente alcune eccezioni: il child process può terminare con codice 0 anche dopo aver stampato un errore operativo. I log Railway e la tabella `errors` devono quindi essere controllati.
+6. Il gross cap resta una regola impartita al decisore LLM, non un nuovo blocco deterministico, per preservare l’architettura originale.
+7. Stop, slippage, liquidazioni e ADL non sono modellati o garantiti dal deployment.
+8. I parametri strategici richiedono backtest indipendente, walk-forward e paper trading.
 
-## Installazione
+## Avvio locale
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python db_utils.py
+cp .env.example .env
+python db_init.py
 pytest -q
+python worker.py
 ```
 
-## Avvio previsto dal progetto
-
-```bash
-python main.py
-```
-
-Richiede `PRIVATE_KEY`, `WALLET_ADDRESS`, `OPENAI_API_KEY`, `DATABASE_URL` e, per il sentiment, `CMC_PRO_API_KEY`. Verificare sempre che `TESTNET=True` prima di qualsiasi prova operativa.
+Non inserire segreti nel repository e non attivare capitale reale sulla base dei soli test offline.
