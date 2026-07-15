@@ -2,42 +2,43 @@
 
 ## Conclusione
 
-La catena decisionale resta **LLM-driven**. Non è stato introdotto un secondo decisore, non è stato cambiato il provider LLM e l'ordine viene ancora inviato esclusivamente da `HyperLiquidTrader.execute_signal`.
+La catena decisionale resta **LLM-driven**. Non è stato introdotto un secondo decisore, non è stato cambiato il provider LLM e l’ordine viene ancora inviato esclusivamente da `HyperLiquidTrader.execute_signal` dentro il ciclo originale `main.py`.
 
 | Elemento architetturale | Prima | Dopo | Modificato? | Motivazione |
 |---|---|---|---|---|
-| Entry point | `main.py` | `main.py` | No | Stesso comando Railway |
-| Raccolta dati | moduli separati | stessi moduli + evidenza daily | Solo strategia | Nuovi indicatori richiesti |
+| Ciclo di trading | `python main.py` una volta | `worker.py` esegue `main.py` periodicamente | Solo hosting | Servizio Railway persistente |
+| Flusso interno | dati → prompt → LLM → executor | identico | No | `main.py` non è stato riscritto per il deploy |
 | Decisore finale | LLM | LLM | No | Autorità invariata |
-| Provider/modello | OpenAI Responses, `gpt-5.1` | uguale | No | Vincolo non negoziabile |
-| Contratto output | JSON open/close/hold | stessi campi | Compatibile | Solo cap leva/stop strategici |
-| Scelta operazione | LLM | LLM | No | Nessun override deterministico |
-| Scelta asset | LLM | LLM, universo originale | No | BTC/ETH/SOL invariati |
-| Scelta direzione | LLM | LLM con policy long bias nel prompt | Ruolo No | Strategia cambiata, autorità no |
-| Scelta quota | LLM | LLM entro raccomandazione | No | Stesso campo |
-| Scelta leva | LLM | LLM, massimo schema 2× | Ruolo No | Limite prudenziale strategico |
+| Provider/modello | OpenAI Responses, `gpt-5.1` | uguale | No | Nessuna modifica |
+| Contratto output | JSON open/close/hold | stessi campi | No | Nessuna modifica di deploy |
+| Scelta operazione, asset, direzione, quota e leva | LLM | LLM | No | Il worker non interpreta il mercato |
 | Calcolo size | `HyperLiquidTrader` | `HyperLiquidTrader` | No | Formula di execution preservata |
-| Impostazione leva | adapter Hyperliquid | stesso adapter | No | Stesso metodo |
-| Invio market order | adapter Hyperliquid | stesso adapter | No | Nessun order sender aggiuntivo |
-| Stop-loss | adapter Hyperliquid | stesso adapter | No | Solo distanza proposta cambia |
-| Chiusura | `market_close` | `market_close` | No | Invariato |
-| Credenziali | `.env` | `.env` | No | Nessun segreto incluso |
-| Persistenza | PostgreSQL `db_utils.py` | stesso DB + campo strategia/drawdown | Adattamento minimo | Tracciabilità e fattore drawdown |
-| Scheduler/deploy | Railway `python main.py` | uguale | No | `railway.json` invariato nel comportamento |
-| Modalità operativa | `TESTNET=True` nel main | uguale | No | Non forzata mainnet |
+| Invio ordine e stop | adapter Hyperliquid | stesso adapter | No | Nessun order sender aggiuntivo |
+| Persistenza | PostgreSQL tramite `db_utils.py` | uguale | No | Schema inizializzato in pre-deploy |
+| Protezione da doppia esecuzione | assente | advisory lock PostgreSQL nel worker | Hosting | Impedisce cicli simultanei, non decide trade |
+| Modalità operativa | `TESTNET=True` in `main.py` | uguale | No | Il deploy non abilita mainnet |
+
+## Ruolo del worker
+
+`worker.py` svolge esclusivamente funzioni operative:
+
+1. verifica e inizializza PostgreSQL;
+2. acquisisce un advisory lock PostgreSQL;
+3. avvia `main.py` in un processo Python separato;
+4. attende l’intervallo configurato;
+5. gestisce l’arresto del servizio Railway.
+
+Non importa né richiama direttamente `previsione_trading_agent`, `execute_signal` o componenti strategici.
 
 ## Verifiche automatiche
 
-`tests/test_architecture_invariance.py` controlla che:
-
-- la chiamata all'LLM preceda `bot.execute_signal(out)`;
-- il modulo strategico non importi OpenAI o l'exchange;
-- il modello e la funzione LLM rimangano in `trading_agent.py`;
-- l'interfaccia pubblica principale di `HyperLiquidTrader` sia presente;
-- il contratto JSON mantenga i campi originali;
-- il prompt dichiari esplicitamente l'autorità invariata dell'LLM;
-- non venga creato un percorso parallelo di invio ordini.
+- la chiamata all’LLM precede `bot.execute_signal(out)` nel main originale;
+- il modulo strategico non può inviare ordini;
+- il worker esegue il main originale come child process;
+- il worker non contiene chiamate all’LLM o all’executor;
+- Railway usa una sola replica e nessuna sovrapposizione di deploy;
+- il lock PostgreSQL impedisce esecuzioni simultanee accidentali.
 
 ## Limite della verifica
 
-L'ambiente non ha fornito un clone Git originale, quindi non è disponibile un `git diff` nativo con cronologia e modalità file. Il confronto è stato eseguito contro il commit GitHub indicato, mediante lettura dei file originali e test di flusso/API. Il pacchetto non deve essere interpretato come prova di identità byte-per-byte di tutti i file non strategici; dimostra invece l'invarianza della catena operativa e delle responsabilità osservabili.
+Non è stato eseguito un ciclo end-to-end con credenziali, account Hyperliquid testnet e progetto Railway reale. L’invarianza riguarda responsabilità, flusso e interfacce osservabili; non certifica redditività o sicurezza live.
