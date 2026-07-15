@@ -1,49 +1,47 @@
 # Modification Scope Report
 
-## File strategici nuovi
+## File strategici
 
 | File | Motivo | Necessità | Rischio regressione | Test |
 |---|---|---|---|---|
 | `strategy_config.py` | Parametri isolati e configurabili | Alta | Basso | strategy tests |
-| `strategy_core.py` | Calcoli puri della nuova strategia | Alta | Medio | 17 test puri e filtri |
-| `tests/test_strategy_core.py` | Verifica segnali, filtri e leva | Alta | Nessuno runtime | pytest |
-| `tests/test_architecture_invariance.py` | Prova di non regressione del flusso | Alta | Nessuno runtime | pytest |
-| `tests/conftest.py` | Import locale dei moduli | Tecnica | Basso | pytest |
-| `pytest.ini` | Esclude script operativo originale | Alta | Basso | pytest |
+| `strategy_core.py` | Calcoli puri della nuova strategia | Alta | Medio | strategy tests |
+| `indicators.py` | Donchian, volatilità e filtri di mercato | Alta | Medio | pytest |
+| `system_prompt.txt` | Regole strategiche mantenendo l’autorità LLM | Alta | Medio | invariance tests |
+| `trading_agent.py` | Contratto output e limiti strategici | Alta | Basso | schema tests |
 
-## File modificati per la strategia
+## Adattamenti Railway/PostgreSQL
 
-| File | Motivo | Classificazione | Necessità | Rischio |
-|---|---|---|---|---|
-| `indicators.py` | OHLCV daily completato, Donchian/vol, spread, mark/oracle | Strategia | Alta | Medio |
-| `system_prompt.txt` | Regole della nuova strategia, autorità LLM invariata | Prompt strategico | Alta | Medio |
-| `trading_agent.py` | Schema massimo 2× e stop ATR compatibile | Parsing/config strategica | Alta | Basso |
-| `main.py` | Aggiunta drawdown state al contesto | Adattamento indispensabile | Alta | Basso |
-| `db_utils.py` | Riutilizzo snapshot esistenti e log strategia | Adattamento indispensabile | Media | Medio |
-| `README.md` | Istruzioni e strategia | Documentazione | Alta | Nessuno |
-| `requirements.txt` | Aggiunta pytest/requests espliciti | Test/compatibilità | Bassa | Basso |
+| File | Motivo | Cambia chi decide il trade? | Rischio | Test |
+|---|---|---:|---|---|
+| `worker.py` | Esegue periodicamente il `main.py` originale | No | Basso | Railway runtime tests |
+| `db_init.py` | Inizializzazione idempotente PostgreSQL con retry | No | Basso | static/config tests |
+| `runtime_config.py` | Parsing dell’intervallo e dei flag del worker | No | Basso | parser tests |
+| `railway.json` | Railpack, pre-deploy DB, worker, replica singola | No | Basso | config tests |
+| `.env.example` | Elenco variabili senza segreti | No | Nessuno | secret placeholder test |
+| `README.md` | Procedura operativa Railway/Postgres | No | Nessuno | review |
+| `tests/test_railway_runtime.py` | Regressione della configurazione di hosting | No | Nessuno | pytest |
 
-## File operativi mantenuti nel medesimo ruolo
+## Componenti operativi non modificati dal deploy
 
-- `hyperliquid_trader.py`: stesso client, firma, sizing, leverage setter, order flow, stop e status API. Nel pacchetto è stato reidratato dalla sorgente analizzata; non contiene logica della nuova strategia.
-- `forecaster.py`, `news_feed.py`, `sentiment.py`, `utils.py`, `whalealert.py`: restano fornitori di contesto o utility; non possiedono autorità decisionale.
-- `railway.json`: stesso start command.
-- `test_trading.py`: preservato come script manuale separato; non raccolto da pytest.
+- `main.py` conserva il ciclo dati → LLM → `HyperLiquidTrader.execute_signal`.
+- `hyperliquid_trader.py` conserva client, sizing, leva, ordine, stop e status.
+- `db_utils.py` continua a possedere schema e logging PostgreSQL.
+- provider e modello LLM restano invariati.
+- non è stato aggiunto un secondo decisore, risk engine o order manager.
 
-## Modifiche escluse
+## Delimitazione del worker
 
-Non sono stati introdotti:
+Il worker può soltanto:
 
-- nuovo orchestratore;
-- nuovo risk engine con autorità superiore;
-- secondo agente LLM;
-- nuovo provider LLM;
-- nuovo adapter Hyperliquid;
-- nuovo order manager;
-- scheduler parallelo;
-- credenziali o file `.env`;
-- backtest presentato come prova di redditività.
+- inizializzare il database;
+- acquisire/rilasciare un advisory lock;
+- avviare `main.py` come child process;
+- attendere il successivo intervallo;
+- rispondere ai segnali di arresto Railway.
 
-## Nota sul diff
+Non importa né chiama direttamente il modello LLM, la strategia o l’execution engine.
 
-Non essendo disponibile un clone Git nel runtime, la classificazione del diff è basata sul confronto semantico con i file del commit GitHub letto tramite connettore. Questa limitazione è riportata anche nel Build Report.
+## Segreti
+
+Nessuna credenziale reale è stata aggiunta. `.env.example` contiene campi vuoti; i valori devono essere configurati nelle Variables di Railway.
