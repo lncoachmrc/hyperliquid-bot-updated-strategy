@@ -7,10 +7,25 @@ and position-management decisions.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Iterable, Tuple
 
 
 ACTIONABLE_CANDIDATES = {"long_candidate", "tactical_long_candidate"}
+
+
+def _has_recent_stop_loss(stop_losses: Any) -> bool:
+    if stop_losses is None:
+        return False
+    if isinstance(stop_losses, str):
+        text = stop_losses.strip()
+        if not text:
+            return False
+        try:
+            return bool(json.loads(text))
+        except Exception:  # noqa: BLE001
+            return text not in {"[]", "{}", "null", "None"}
+    return bool(stop_losses)
 
 
 def should_invoke_llm(
@@ -22,7 +37,7 @@ def should_invoke_llm(
     if open_positions:
         return True, "open_position_requires_management"
 
-    if stop_losses:
+    if _has_recent_stop_loss(stop_losses):
         return True, "recent_stop_loss_requires_review"
 
     candidates = []
