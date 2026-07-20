@@ -7,6 +7,13 @@ from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
 from runtime_config import env_bool
+from execution_audit import (
+    attach_post_snapshot,
+    ensure_execution_audit_schema,
+    log_execution_result,
+    normalize_execution_exception,
+    normalize_execution_result,
+)
 import os
 import json
 import string
@@ -59,6 +66,10 @@ try:
         testnet=TESTNET,
     )
 
+    # Additive schema used only for execution auditing. If it cannot be created,
+    # the cycle fails before any live order can be sent.
+    ensure_execution_audit_schema()
+
     # The same network selection must be used for strategy market data and for
     # account/execution, otherwise the LLM can reason on a different venue from
     # the one where orders and balances are read.
@@ -80,8 +91,8 @@ try:
     account_status = bot.get_account_status()
     stop_losses = check_stop_loss(account_status)
 
-    snapshot_id = db_utils.log_account_status(account_status)
-    print(f"[db_utils] Operazione inserita con id={snapshot_id}")
+    pre_snapshot_id = db_utils.log_account_status(account_status)
+    print(f"[db_utils] Account snapshot pre-esecuzione id={pre_snapshot_id}")
 
     # Existing PostgreSQL persistence is reused. No parallel state store is
     # introduced; this is the drawdown term required by the new strategy.
@@ -100,8 +111,10 @@ try:
 
     print("L'agente sta decidendo la sua azione!")
     out = previsione_trading_agent(system_prompt)
-    bot.execute_signal(out)
 
+    # Persist the LLM decision BEFORE touching the exchange. This creates a
+    # durable requested-action record and is fail-safe: a DB outage prevents a
+    # live order rather than producing an untracked order.
     op_id = db_utils.log_bot_operation(
         out,
         system_prompt=system_prompt,
@@ -110,13 +123,39 @@ try:
         sentiment=sentiment_json,
         forecasts=forecasts_json,
     )
-    print(f"[db_utils] Operazione inserita con id={op_id}")
+    print(f"[db_utils] Decisione LLM inserita con id={op_id}")
 
+    execution_error = None
+    try:
+        raw_execution_response = bot.execute_signal(out)
+        execution_result = normalize_execution_result(out, raw_execution_response)
+    except Exception as exc:  # noqa: BLE001
+        execution_error = exc
+        execution_result = normalize_execution_exception(out, exc)
+
+    execution_id = log_execution_result(
+        operation_id=op_id,
+        pre_snapshot_id=pre_snapshot_id,
+        decision=out,
+        execution_result=execution_result,
+    )
+    print(
+        "[execution_audit] "
+        f"id={execution_id}, status={execution_result.get('execution_status')}, "
+        f"order_id={execution_result.get('order_id')}"
+    )
+
+    # Always read the account again after the attempted action, including failed
+    # exchange calls, so the audit can compare state before and after.
     account_status = bot.get_account_status()
     with open("account_status_old.json", "w", encoding="utf-8") as status_file:
         json.dump(account_status["open_positions"], status_file, indent=4)
-    snapshot_id = db_utils.log_account_status(account_status)
-    print(f"[db_utils] Operazione inserita con id={snapshot_id}")
+    post_snapshot_id = db_utils.log_account_status(account_status)
+    attach_post_snapshot(execution_id, post_snapshot_id)
+    print(f"[db_utils] Account snapshot post-esecuzione id={post_snapshot_id}")
+
+    if execution_error is not None:
+        raise execution_error
 
 except Exception as e:
     # Preserve the existing error path. Locals are collected defensively so an
@@ -129,6 +168,8 @@ except Exception as e:
         "sentiment": locals().get("sentiment_json"),
         "forecasts": locals().get("forecasts_json"),
         "balance": locals().get("account_status"),
+        "decision": locals().get("out"),
+        "execution_result": locals().get("execution_result"),
     }
     try:
         db_utils.log_error(e, context=context, source="trading_agent")
