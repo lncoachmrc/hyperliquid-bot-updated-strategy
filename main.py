@@ -7,6 +7,7 @@ from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
 from runtime_config import env_bool
+from decision_gate import deterministic_hold, should_invoke_llm
 from execution_audit import (
     attach_post_snapshot,
     ensure_execution_audit_schema,
@@ -70,23 +71,14 @@ try:
     # the cycle fails before any live order can be sent.
     ensure_execution_audit_schema()
 
-    # The same network selection must be used for strategy market data and for
-    # account/execution, otherwise the LLM can reason on a different venue from
-    # the one where orders and balances are read.
+    # Market/strategy evidence is always refreshed. Expensive news, sentiment,
+    # forecast and LLM calls are deferred until the cheap deterministic gate says
+    # an actionable candidate or an open-position management decision exists.
     tickers = ["BTC", "ETH", "SOL"]
     indicators_txt, indicators_json = analyze_multiple_tickers(
         tickers,
         testnet=TESTNET,
     )
-    news_txt = fetch_latest_news()
-    # whale_alerts_txt = format_whale_alerts_to_string()
-    sentiment_txt, sentiment_json = get_sentiment()
-    forecasts_txt, forecasts_json = get_crypto_forecasts()
-
-    msg_info = f"""<indicatori>\n{indicators_txt}\n</indicatori>\n\n
-    <news>\n{news_txt}</news>\n\n
-    <sentiment>\n{sentiment_txt}\n</sentiment>\n\n
-    <forecast>\n{forecasts_txt}\n</forecast>\n\n"""
 
     account_status = bot.get_account_status()
     stop_losses = check_stop_loss(account_status)
@@ -94,27 +86,61 @@ try:
     pre_snapshot_id = db_utils.log_account_status(account_status)
     print(f"[db_utils] Account snapshot pre-esecuzione id={pre_snapshot_id}")
 
-    # Existing PostgreSQL persistence is reused. No parallel state store is
-    # introduced; this is the drawdown term required by the new strategy.
     drawdown_state = db_utils.get_account_drawdown_state(
         current_balance=account_status["balance_usd"]
     )
-    portfolio_data = (
-        f"{json.dumps(account_status)}\n"
-        f"Portfolio drawdown state: {json.dumps(drawdown_state)}\n"
-        f"Stop Loss attivati 15 min fa: {stop_losses}"
+
+    invoke_llm, gate_reason = should_invoke_llm(
+        indicators_json,
+        account_status,
+        stop_losses,
     )
+    print(f"[decision_gate] invoke_llm={invoke_llm}, reason={gate_reason}")
 
-    with open("system_prompt.txt", "r", encoding="utf-8") as prompt_file:
-        system_prompt = prompt_file.read()
-    system_prompt = system_prompt.format(portfolio_data, msg_info)
+    news_txt = ""
+    sentiment_txt = ""
+    sentiment_json = None
+    forecasts_txt = ""
+    forecasts_json = None
+    system_prompt = None
 
-    print("L'agente sta decidendo la sua azione!")
-    out = previsione_trading_agent(system_prompt)
+    if invoke_llm:
+        news_txt = fetch_latest_news()
+        # whale_alerts_txt = format_whale_alerts_to_string()
+        sentiment_txt, sentiment_json = get_sentiment()
+        forecasts_txt, forecasts_json = get_crypto_forecasts()
 
-    # Persist the LLM decision BEFORE touching the exchange. This creates a
-    # durable requested-action record and is fail-safe: a DB outage prevents a
-    # live order rather than producing an untracked order.
+        msg_info = f"""<indicatori>\n{indicators_txt}\n</indicatori>\n\n
+        <news>\n{news_txt}</news>\n\n
+        <sentiment>\n{sentiment_txt}\n</sentiment>\n\n
+        <forecast>\n{forecasts_txt}\n</forecast>\n\n"""
+
+        portfolio_data = (
+            f"{json.dumps(account_status)}\n"
+            f"Portfolio drawdown state: {json.dumps(drawdown_state)}\n"
+            f"Stop Loss attivati 15 min fa: {stop_losses}"
+        )
+
+        with open("system_prompt.txt", "r", encoding="utf-8") as prompt_file:
+            system_prompt = prompt_file.read()
+        system_prompt = system_prompt.format(portfolio_data, msg_info)
+
+        print("L'agente sta decidendo la sua azione!")
+        out = previsione_trading_agent(system_prompt)
+        out["decision_source"] = "llm"
+        out["decision_gate_reason"] = gate_reason
+    else:
+        out = deterministic_hold(gate_reason)
+        out["decision_source"] = "deterministic_prefilter"
+        out["decision_gate_reason"] = gate_reason
+        print(
+            "[decision_gate] LLM non chiamato: account flat e nessun candidato "
+            "azionabile. HOLD deterministico."
+        )
+
+    # Persist the decision BEFORE touching the exchange. This creates a durable
+    # requested-action record and is fail-safe: a DB outage prevents a live order
+    # rather than producing an untracked order.
     op_id = db_utils.log_bot_operation(
         out,
         system_prompt=system_prompt,
@@ -123,7 +149,10 @@ try:
         sentiment=sentiment_json,
         forecasts=forecasts_json,
     )
-    print(f"[db_utils] Decisione LLM inserita con id={op_id}")
+    print(
+        f"[db_utils] Decisione inserita con id={op_id}, "
+        f"source={out.get('decision_source')}"
+    )
 
     execution_error = None
     try:
@@ -170,6 +199,7 @@ except Exception as e:
         "balance": locals().get("account_status"),
         "decision": locals().get("out"),
         "execution_result": locals().get("execution_result"),
+        "decision_gate_reason": locals().get("gate_reason"),
     }
     try:
         db_utils.log_error(e, context=context, source="trading_agent")
