@@ -16,6 +16,7 @@ from strategy_core import (
     build_strategy_snapshot,
     portfolio_correlation_factor,
 )
+from strategy_dynamic import apply_dynamic_strategy_overlay
 
 # Costante Fee Taker standard utilizzata dal progetto originale.
 TAKER_FEE_RATE = 0.00035
@@ -63,8 +64,9 @@ def completed_candle_age_hours(
 class CryptoTechnicalAnalysisHL:
     """Hyperliquid market-data adapter plus strategy feature calculation.
 
-    The class and its public methods remain in the same place as the original
-    project.  Only the strategic indicators supplied to the LLM are replaced.
+    The daily model remains the strategic anchor.  A completed-bar 15m tactical
+    overlay may create a reduced-risk candidate during an adverse daily regime,
+    while hard market-quality filters remain absolute.
     """
 
     def __init__(
@@ -216,8 +218,7 @@ class CryptoTechnicalAnalysisHL:
         frame.sort_values("timestamp", inplace=True)
         frame.drop_duplicates("timestamp", keep="last", inplace=True)
 
-        # A signal may use only fully completed bars.  This prevents the current
-        # daily candle from defining its own Donchian or volatility observation.
+        # Signals use only fully completed candles, for both 1d and 15m data.
         cutoff = pd.Timestamp(now) - pd.to_timedelta(step_ms, unit="ms")
         frame = frame[frame["timestamp"] <= cutoff].tail(limit).reset_index(drop=True)
         if frame.empty:
@@ -309,6 +310,12 @@ class CryptoTechnicalAnalysisHL:
             average_correlation=average_correlation,
             cfg=self.strategy_config,
         )
+        strategy = apply_dynamic_strategy_overlay(
+            strategy,
+            frame_15m,
+            coin,
+            cfg=self.strategy_config,
+        )
 
         last_daily = pd.Timestamp(frame_daily["timestamp"].iloc[-1])
         last_daily_close = completed_candle_close_time(
@@ -386,7 +393,7 @@ class CryptoTechnicalAnalysisHL:
             f"\n<{data['ticker']}_data>",
             f"Timestamp: {data['timestamp']} UTC",
             "",
-            "DEEP-RESEARCH STRATEGY SNAPSHOT (primary decision evidence):",
+            "DAILY + TACTICAL STRATEGY SNAPSHOT (primary decision evidence):",
             json.dumps(strategy, indent=2, ensure_ascii=False, default=str),
             "",
             "Execution/liquidity context:",
@@ -399,7 +406,7 @@ class CryptoTechnicalAnalysisHL:
             f"depth_usd={orderbook['depth_usd']}",
             f"estimated_taker_fee_usd_per_coin={derivatives['estimated_fee_cost']}",
             "",
-            "Legacy 15m context (secondary only; it must not override hard strategy filters):",
+            "Completed 15m tactical context:",
             f"ema20={current['ema20']}, macd={current['macd']}, rsi7={current['rsi_7']}",
             f"</{data['ticker']}_data>",
         ]
