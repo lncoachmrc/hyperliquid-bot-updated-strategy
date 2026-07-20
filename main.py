@@ -8,19 +8,39 @@ from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
 import os
 import json
+import string
 import db_utils
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def normalize_private_key(raw_key):
+    """Validate a 32-byte EVM private key without ever logging its value."""
+    if not raw_key:
+        raise RuntimeError("PRIVATE_KEY mancante nelle variabili d'ambiente")
+
+    value = raw_key.strip()
+    if value.startswith(("0x", "0X")):
+        value = value[2:]
+
+    if len(value) != 64 or any(char not in string.hexdigits for char in value):
+        raise RuntimeError(
+            "PRIVATE_KEY non valida: deve contenere esattamente 64 caratteri "
+            "esadecimali (prefisso 0x opzionale), senza virgolette o spazi"
+        )
+
+    return "0x" + value.lower()
+
+
 # Collegamento ad Hyperliquid: modalità e autorità operative invariate.
 TESTNET = True
 VERBOSE = True
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+PRIVATE_KEY = normalize_private_key(os.getenv("PRIVATE_KEY"))
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 
-if not PRIVATE_KEY or not WALLET_ADDRESS:
-    raise RuntimeError("PRIVATE_KEY o WALLET_ADDRESS mancanti nel .env")
+if not WALLET_ADDRESS:
+    raise RuntimeError("WALLET_ADDRESS mancante nelle variabili d'ambiente")
 
 try:
     bot = HyperLiquidTrader(
@@ -101,3 +121,4 @@ except Exception as e:
     except Exception as logging_error:
         print(f"Errore durante il logging DB: {logging_error}")
     print(f"An error occurred: {e}")
+    raise
