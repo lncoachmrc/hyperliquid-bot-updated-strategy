@@ -8,6 +8,11 @@ from openai import OpenAI
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-5.6-terra").strip()
+
+if not OPENAI_MODEL:
+    raise RuntimeError("OPENAI_MODEL non può essere vuoto")
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
@@ -83,8 +88,9 @@ def trade_operation_schema() -> dict:
 
 
 def previsione_trading_agent(prompt):
+    print(f"[llm] OpenAI model={OPENAI_MODEL}")
     response = client.responses.create(
-        model="gpt-5.1",
+        model=OPENAI_MODEL,
         input=prompt,
         text={
             "format": {
