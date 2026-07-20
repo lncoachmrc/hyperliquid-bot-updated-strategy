@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from strategy_config import DEFAULT_STRATEGY_CONFIG
 from strategy_dynamic import apply_dynamic_strategy_overlay
@@ -63,8 +62,9 @@ def test_adverse_regime_can_create_capped_tactical_candidate():
     assert result["recommended_action"] == "tactical_long_candidate"
     assert result["tactical_intraday"]["candidate"] is True
     assert result["recommended_effective_exposure_before_drawdown"] > 0
-    assert result["recommended_effective_exposure_before_drawdown"] <= pytest.approx(
-        CFG.tactical_effective_exposure_cap
+    assert (
+        result["recommended_effective_exposure_before_drawdown"]
+        <= CFG.tactical_effective_exposure_cap + 1e-12
     )
 
 
