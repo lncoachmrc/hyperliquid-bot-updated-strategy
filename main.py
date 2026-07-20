@@ -6,6 +6,7 @@ from whalealert import format_whale_alerts_to_string
 from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
+from runtime_config import env_bool
 import os
 import json
 import string
@@ -33,26 +34,39 @@ def normalize_private_key(raw_key):
     return "0x" + value.lower()
 
 
-# Collegamento ad Hyperliquid: modalità e autorità operative invariate.
-TESTNET = True
+# Railway/runtime controls the Hyperliquid environment. Testnet remains the
+# safe default when TESTNET is missing.
+TESTNET = env_bool("TESTNET", True)
 VERBOSE = True
 PRIVATE_KEY = normalize_private_key(os.getenv("PRIVATE_KEY"))
-WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
+WALLET_ADDRESS = (os.getenv("WALLET_ADDRESS") or "").strip()
 
 if not WALLET_ADDRESS:
     raise RuntimeError("WALLET_ADDRESS mancante nelle variabili d'ambiente")
 
 try:
+    network_name = "TESTNET" if TESTNET else "MAINNET"
+    masked_account = (
+        f"{WALLET_ADDRESS[:6]}...{WALLET_ADDRESS[-4:]}"
+        if len(WALLET_ADDRESS) > 12
+        else "configured"
+    )
+    print(f"[runtime] Hyperliquid network={network_name}, account={masked_account}")
+
     bot = HyperLiquidTrader(
         secret_key=PRIVATE_KEY,
         account_address=WALLET_ADDRESS,
         testnet=TESTNET,
     )
 
-    # Gli stessi asset originali vengono analizzati. Gli indicatori strategici
-    # sono ora daily Donchian/TSMOM con volatility targeting.
+    # The same network selection must be used for strategy market data and for
+    # account/execution, otherwise the LLM can reason on a different venue from
+    # the one where orders and balances are read.
     tickers = ["BTC", "ETH", "SOL"]
-    indicators_txt, indicators_json = analyze_multiple_tickers(tickers)
+    indicators_txt, indicators_json = analyze_multiple_tickers(
+        tickers,
+        testnet=TESTNET,
+    )
     news_txt = fetch_latest_news()
     # whale_alerts_txt = format_whale_alerts_to_string()
     sentiment_txt, sentiment_json = get_sentiment()
