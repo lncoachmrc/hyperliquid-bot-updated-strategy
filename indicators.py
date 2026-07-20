@@ -30,6 +30,36 @@ INTERVAL_TO_MS = {
 }
 
 
+def _as_utc_timestamp(value) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def completed_candle_close_time(bar_open, interval: str) -> pd.Timestamp:
+    """Return the close timestamp for a candle whose exchange timestamp is its open."""
+    if interval not in INTERVAL_TO_MS:
+        raise ValueError(f"Interval '{interval}' non supportato")
+    return _as_utc_timestamp(bar_open) + pd.to_timedelta(
+        INTERVAL_TO_MS[interval], unit="ms"
+    )
+
+
+def completed_candle_age_hours(
+    bar_open,
+    interval: str,
+    *,
+    now: Optional[pd.Timestamp] = None,
+) -> float:
+    """Measure freshness from candle close, not from its opening timestamp."""
+    current_time = (
+        pd.Timestamp.now(tz="UTC") if now is None else _as_utc_timestamp(now)
+    )
+    close_time = completed_candle_close_time(bar_open, interval)
+    return max(0.0, (current_time - close_time).total_seconds() / 3600.0)
+
+
 class CryptoTechnicalAnalysisHL:
     """Hyperliquid market-data adapter plus strategy feature calculation.
 
@@ -281,7 +311,13 @@ class CryptoTechnicalAnalysisHL:
         )
 
         last_daily = pd.Timestamp(frame_daily["timestamp"].iloc[-1])
-        age_hours = (pd.Timestamp.now(tz="UTC") - last_daily).total_seconds() / 3600.0
+        last_daily_close = completed_candle_close_time(
+            last_daily, self.strategy_config.timeframe
+        )
+        age_hours = completed_candle_age_hours(
+            last_daily, self.strategy_config.timeframe
+        )
+        strategy["last_completed_daily_bar_close"] = last_daily_close.isoformat()
         strategy["completed_daily_candle_age_hours"] = age_hours
         if age_hours > self.strategy_config.maximum_daily_candle_age_hours:
             strategy["status"] = "suspended"
