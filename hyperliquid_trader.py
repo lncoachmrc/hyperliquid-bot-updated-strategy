@@ -1,7 +1,7 @@
 import json
 import time
 from decimal import Decimal, ROUND_DOWN
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import eth_account
 from eth_account.signers.local import LocalAccount
@@ -10,13 +10,55 @@ from hyperliquid.info import Info
 from hyperliquid.utils import constants
 
 
-class HyperLiquidTrader:
-    """Original Hyperliquid execution adapter.
+SPOT_COLLATERAL_ACCOUNT_MODES = {"unifiedAccount", "portfolioMargin"}
 
-    The order flow, exchange client, leverage setter, position sizing and stop
-    placement remain in the same component and preserve the original public
-    interface.
-    """
+
+def _as_decimal(value: Any, default: str = "0") -> Decimal:
+    try:
+        if value is None or value == "":
+            return Decimal(default)
+        return Decimal(str(value))
+    except Exception:  # noqa: BLE001
+        return Decimal(default)
+
+
+def _normalize_account_mode(value: Any) -> str:
+    """Normalize the userAbstraction response without assuming one SDK version."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("abstraction", "mode", "type"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return "unknown"
+
+
+def _extract_spot_usdc_balance(spot_state: Any) -> Tuple[bool, Decimal, Decimal, Decimal]:
+    """Return (found, total, hold, available) for USDC in spotClearinghouseState."""
+    if not isinstance(spot_state, dict):
+        return False, Decimal("0"), Decimal("0"), Decimal("0")
+
+    balances = spot_state.get("balances", [])
+    if not isinstance(balances, list):
+        return False, Decimal("0"), Decimal("0"), Decimal("0")
+
+    for balance in balances:
+        if not isinstance(balance, dict):
+            continue
+        coin = str(balance.get("coin", "")).upper()
+        token = balance.get("token")
+        if coin == "USDC" or (not coin and token == 0):
+            total = _as_decimal(balance.get("total"))
+            hold = _as_decimal(balance.get("hold"))
+            available = max(Decimal("0"), total - hold)
+            return True, total, hold, available
+
+    return False, Decimal("0"), Decimal("0"), Decimal("0")
+
+
+class HyperLiquidTrader:
+    """Hyperliquid execution adapter with account-mode-aware balance handling."""
 
     def __init__(
         self,
@@ -81,6 +123,78 @@ class HyperLiquidTrader:
     def _round_size(self, size: Decimal, decimals: int) -> float:
         size = size.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
         return float(f"{size:.{decimals}f}")
+
+    def _get_account_mode(self) -> str:
+        """Query Hyperliquid's userAbstraction endpoint with a safe fallback."""
+        try:
+            response = self.info.post(
+                "/info",
+                {"type": "userAbstraction", "user": self.account_address},
+            )
+            return _normalize_account_mode(response)
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️ Impossibile leggere userAbstraction: {exc}")
+            return "unknown"
+
+    def _get_account_balance_details(
+        self, perp_state: Dict[str, Any] | None = None
+    ) -> Dict[str, Any]:
+        """Resolve equity and available balance according to account abstraction mode.
+
+        Hyperliquid Unified Account and Portfolio Margin expose balances/holds in
+        spotClearinghouseState. Standard/legacy modes continue to use the perp
+        clearinghouse state's marginSummary.
+        """
+        data = perp_state if perp_state is not None else self.info.user_state(self.account_address)
+        margin_summary = data.get("marginSummary", {}) if isinstance(data, dict) else {}
+        perp_account_value = _as_decimal(margin_summary.get("accountValue"))
+        perp_withdrawable = _as_decimal(data.get("withdrawable")) if isinstance(data, dict) else Decimal("0")
+
+        account_mode = self._get_account_mode()
+        spot_state: Dict[str, Any] = {}
+        try:
+            raw_spot_state = self.info.spot_user_state(self.account_address)
+            if isinstance(raw_spot_state, dict):
+                spot_state = raw_spot_state
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️ Impossibile leggere spotClearinghouseState: {exc}")
+
+        (
+            spot_usdc_found,
+            spot_usdc_total,
+            spot_usdc_hold,
+            spot_usdc_available,
+        ) = _extract_spot_usdc_balance(spot_state)
+
+        uses_spot_collateral = account_mode in SPOT_COLLATERAL_ACCOUNT_MODES
+        if uses_spot_collateral and spot_usdc_found:
+            balance_usd = spot_usdc_total
+            available_balance_usd = spot_usdc_available
+            balance_source = "spotClearinghouseState.USDC.total"
+            available_balance_source = "spotClearinghouseState.USDC.total_minus_hold"
+        else:
+            balance_usd = perp_account_value
+            available_balance_usd = max(Decimal("0"), perp_withdrawable)
+            if available_balance_usd == 0 and balance_usd > 0:
+                available_balance_usd = balance_usd
+            balance_source = "clearinghouseState.marginSummary.accountValue"
+            available_balance_source = "clearinghouseState.withdrawable"
+            if uses_spot_collateral and not spot_usdc_found:
+                balance_source += "_fallback_missing_spot_usdc"
+                available_balance_source += "_fallback_missing_spot_usdc"
+
+        return {
+            "account_mode": account_mode,
+            "balance_source": balance_source,
+            "available_balance_source": available_balance_source,
+            "balance_usd": float(balance_usd),
+            "available_balance_usd": float(available_balance_usd),
+            "perp_account_value": float(perp_account_value),
+            "perp_withdrawable": float(perp_withdrawable),
+            "spot_usdc_total": float(spot_usdc_total),
+            "spot_usdc_hold": float(spot_usdc_hold),
+            "spot_usdc_available": float(spot_usdc_available),
+        }
 
     def get_current_leverage(self, symbol: str) -> Dict[str, Any]:
         try:
@@ -189,10 +303,15 @@ class HyperLiquidTrader:
             print(f"⚠️ Warning leva: {leverage_result}")
         time.sleep(0.5)
 
-        user = self.info.user_state(self.account_address)
-        balance_usd = Decimal(str(user["marginSummary"]["accountValue"]))
+        balance_details = self._get_account_balance_details()
+        balance_usd = Decimal(str(balance_details["available_balance_usd"]))
+        print(
+            "[HyperLiquidTrader] Balance source="
+            f"{balance_details['available_balance_source']}, "
+            f"available=${balance_usd}, mode={balance_details['account_mode']}"
+        )
         if balance_usd <= 0:
-            raise RuntimeError("Balance account = 0")
+            raise RuntimeError("Available balance account = 0")
 
         mids = self.info.all_mids()
         if symbol not in mids:
@@ -260,7 +379,7 @@ class HyperLiquidTrader:
 
     def get_account_status(self) -> Dict[str, Any]:
         data = self.info.user_state(self.account_address)
-        balance = float(data["marginSummary"]["accountValue"])
+        balance_details = self._get_account_balance_details(perp_state=data)
         mids = self.info.all_mids()
         positions = []
 
@@ -294,7 +413,11 @@ class HyperLiquidTrader:
                     "leverage": f"{leverage_value}x ({leverage_type})",
                 }
             )
-        return {"balance_usd": balance, "open_positions": positions}
+
+        return {
+            **balance_details,
+            "open_positions": positions,
+        }
 
     def debug_symbol_limits(self, symbol: str = None):
         print("\n📊 LIMITI TRADING HYPERLIQUID")
