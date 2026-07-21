@@ -53,8 +53,9 @@ def _classify_order_response(raw_response: Any) -> Dict[str, Any]:
     """Classify a Hyperliquid order response using the nested statuses payload.
 
     Hyperliquid may return top-level ``status=ok`` while an individual order is
-    rejected in ``response.data.statuses``.  This helper therefore treats the
-    nested statuses as authoritative for order success/failure.
+    rejected in ``response.data.statuses``. This helper therefore treats the
+    nested statuses as authoritative for order success/failure. A local
+    ``status=skipped`` means the safety adapter deliberately sent no order.
     """
     result: Dict[str, Any] = {
         "execution_status": "unknown",
@@ -71,6 +72,13 @@ def _classify_order_response(raw_response: Any) -> Dict[str, Any]:
 
     exchange_status = raw_response.get("status")
     result["exchange_status"] = str(exchange_status) if exchange_status is not None else None
+
+    if exchange_status == "skipped":
+        result["execution_status"] = "no_action"
+        result["error_message"] = str(
+            raw_response.get("reason") or "Order skipped by local execution safety guard"
+        )
+        return result
 
     if exchange_status != "ok":
         result["execution_status"] = "failed"
@@ -232,7 +240,7 @@ def log_execution_result(
                     execution_result.get("filled_size"),
                     execution_result.get("avg_price"),
                     execution_result.get("error_message"),
-                    Json(payload),
+                    Json(db_utils._normalize_for_json(payload)),
                 ),
             )
             execution_id = cursor.fetchone()[0]
