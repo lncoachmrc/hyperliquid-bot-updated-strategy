@@ -89,8 +89,8 @@ def should_invoke_llm(
         return False, "flat_account_and_no_executable_candidate"
 
     # A persistent flat-account candidate does not justify an LLM call every ten
-    # minutes. Call immediately on the transition to a new executable candidate,
-    # then review it on the same 30-minute cadence used for stable positions.
+    # minutes. Call immediately on a new candidate OR when the candidate materially
+    # improves in quality, otherwise use the normal 30-minute review cadence.
     if isinstance(management_state, dict) and "llm_review_due" in management_state:
         new_candidates = {
             str(item).upper()
@@ -99,6 +99,15 @@ def should_invoke_llm(
         transitioned = [symbol for symbol in candidates if symbol in new_candidates]
         if transitioned:
             return True, "new_actionable_candidates:" + ",".join(transitioned)
+
+        upgraded_candidates = {
+            str(item).upper()
+            for item in (management_state.get("candidate_upgrade_symbols") or [])
+        }
+        upgraded = [symbol for symbol in candidates if symbol in upgraded_candidates]
+        if upgraded:
+            return True, "candidate_quality_upgrade:" + ",".join(upgraded)
+
         if management_state.get("llm_review_due") is True:
             return True, "persistent_candidate_scheduled_review"
         return False, "persistent_candidate_review_not_due"
