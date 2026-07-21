@@ -1,0 +1,54 @@
+name: Position Guard Tests
+
+on:
+  push:
+    branches:
+      - position-hysteresis-sizing-guard
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            pytest>=8.0 \
+            pandas>=2.0 \
+            numpy>=1.24 \
+            python-dotenv \
+            psycopg2-binary \
+            hyperliquid-python-sdk \
+            eth-account
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      - name: Run strategy and safety regression tests
+        run: |
+          pytest -q \
+            tests/test_strategy_core.py \
+            tests/test_strategy_dynamic.py \
+            tests/test_decision_gate.py \
+            tests/test_decision_guard.py \
+            tests/test_execution_audit.py \
+            tests/test_execution_policy.py \
+            tests/test_minimum_order_sizing.py \
+            tests/test_position_management.py \
+            tests/test_db_json_normalization.py
