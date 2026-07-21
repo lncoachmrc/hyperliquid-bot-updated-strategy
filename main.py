@@ -12,6 +12,7 @@ from decision_guard import apply_decision_guard
 from execution_policy import (
     annotate_execution_feasibility,
     compact_execution_feasibility,
+    enrich_constraints_with_live_leverage,
 )
 from position_management import (
     build_position_management_state,
@@ -99,10 +100,11 @@ try:
         # positions remain manageable through the position policy and LLM.
         drawdown_factor_for_execution = 0.0
 
-    # Evaluate real exchange minimums before deciding whether an LLM call or an
-    # OPEN can add value. A sub-minimum recommendation is marked non-executable;
-    # it is never silently increased to the minimum size.
+    # Evaluate exchange minimums and current asset maxLeverage before the LLM is
+    # called. Dynamic leverage changes collateral representation only; final
+    # economic exposure remains bounded by stop risk, drawdown and strategy caps.
     execution_constraints = bot.get_execution_constraints(tickers)
+    enrich_constraints_with_live_leverage(execution_constraints, bot.meta)
     annotate_execution_feasibility(
         indicators_json,
         execution_constraints,
