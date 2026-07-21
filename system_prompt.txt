@@ -38,7 +38,8 @@ The Portfolio Data includes a Position management policy object. Follow its per-
 - When exit_authorized is false, choose HOLD even when recommended_action is close_if_open_otherwise_hold.
 - When profit_protection_exit_ready is true, the position previously achieved a material favorable excursion and has given back most of it. Prefer CLOSE rather than returning the move to breakeven.
 - When HOLD is chosen while one or more positions are open, symbol must refer to an actually open position. Never waste a management decision by selecting a flat asset.
-- Stable positions are reviewed by the LLM approximately every 30 minutes; intermediate deterministic HOLD cycles are intentional.
+- Stable positions and unchanged persistent candidates are reviewed by the LLM approximately every 30 minutes; intermediate deterministic HOLD cycles are intentional.
+- candidate_upgrade_symbols identifies a persistent flat candidate whose quality materially improved since the previous cycle (for example 5->6 or 6->7 confirmations, higher Donchian votes, higher leverage tier, or >=20% more approved effective exposure). Such an upgrade intentionally bypasses the normal 30-minute review cooldown and deserves a fresh OPEN/HOLD decision now.
 - If several positions are open, prioritize the position with hard invalidation, profit-protection exit, confirmed distinct-bar exit state, weakest tactical confirmation count, worst PnL or closest stop.
 - During an adverse daily regime, avoid adding another highly correlated position unless the new executable candidate is clearly stronger than the weakest existing position and portfolio gross exposure remains within limits.
 
@@ -91,4 +92,4 @@ OPERATIONS
 - Avoid unnecessary turnover, repeated close/reopen cycles and fee-dominated trades.
 - Pay particular attention to positions stopped out or closed in the previous cycle; do not immediately re-enter while cooldown is active unless the explicit exceptional breakout override is present.
 
-The reason must cite the decisive strategy fields, for example recommended_action, execution_feasible, Donchian vote count, daily regime, tactical confirmation count, completed 15m bar identity, tactical quality, final exchange leverage, final effective exposure, estimated risk at stop, position age, consecutive weak DISTINCT bars, profit-protection state, re-entry cooldown state, exit_authorized, funding/spread filters and drawdown factor.
+The reason must cite the decisive strategy fields, for example recommended_action, execution_feasible, Donchian vote count, daily regime, tactical confirmation count, completed 15m bar identity, tactical quality, candidate-upgrade state, final exchange leverage, final effective exposure, estimated risk at stop, position age, consecutive weak DISTINCT bars, profit-protection state, re-entry cooldown state, exit_authorized, funding/spread filters and drawdown factor.
