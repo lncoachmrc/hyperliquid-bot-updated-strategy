@@ -2,8 +2,9 @@
 
 The daily trend/regime remains the strategic anchor, but an adverse daily
 regime is treated as a risk multiplier rather than an unconditional trading
-halt.  A high-quality 15-minute setup may therefore become a reduced-risk
-`tactical_long_candidate`.  Hard data/liquidity invalidations remain absolute.
+halt. A high-quality completed-bar 15-minute setup may therefore become a
+risk-budgeted tactical long candidate. Hard data/liquidity invalidations remain
+absolute.
 """
 from __future__ import annotations
 
@@ -12,8 +13,11 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
+from leverage_policy import (
+    build_leverage_recommendation,
+    tactical_risk_profile,
+)
 from strategy_config import DEFAULT_STRATEGY_CONFIG, StrategyConfig
-from strategy_core import exposure_to_execution
 
 
 ADVERSE_REGIME_INVALIDATION = "adverse_market_regime"
@@ -49,7 +53,7 @@ def build_tactical_intraday_snapshot(
     frame_15m: pd.DataFrame,
     cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG,
 ) -> Dict[str, Any]:
-    """Evaluate a completed-bar 15m long setup without placing or approving orders."""
+    """Evaluate a completed-bar 15m long setup without approving an order."""
     required = {"close", "volume", "ema_20", "ema_50", "macd", "rsi_14", "atr_14"}
     missing = sorted(required.difference(frame_15m.columns))
     if missing or len(frame_15m) < 5:
@@ -158,11 +162,7 @@ def apply_dynamic_strategy_overlay(
     symbol: str,
     cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG,
 ) -> Dict[str, Any]:
-    """Convert the static daily halt into a capped tactical opportunity model.
-
-    This function can only create a candidate.  The LLM remains the final
-    authority for OPEN/CLOSE/HOLD, and exchange execution remains unchanged.
-    """
+    """Create candidates and leverage evidence; the LLM keeps final authority."""
     result = dict(strategy)
     symbol = symbol.upper()
     original_action = result.get("recommended_action")
@@ -206,6 +206,15 @@ def apply_dynamic_strategy_overlay(
 
     tactical = build_tactical_intraday_snapshot(frame_15m, cfg)
     result["tactical_intraday"] = tactical
+    confirmations = int(tactical.get("confirmations") or 0)
+    tactical_profile = tactical_risk_profile(
+        symbol=symbol,
+        regime=regime,
+        donchian_positive_votes=positive_votes,
+        tactical_confirmations=confirmations,
+        cfg=cfg,
+    )
+    result["tactical_risk_profile"] = tactical_profile
 
     raw_cap = min(
         max(0.0, _finite_float(result.get("volatility_base_exposure")) or 0.0),
@@ -224,8 +233,11 @@ def apply_dynamic_strategy_overlay(
     elif regime == "adverse":
         if tactical.get("candidate"):
             final_exposure = min(
-                raw_cap * cfg.adverse_regime_factor * liquidity * correlation,
-                cfg.tactical_effective_exposure_cap,
+                raw_cap
+                * float(tactical_profile["risk_multiplier"])
+                * liquidity
+                * correlation,
+                float(tactical_profile["effective_exposure_cap"]),
             )
             if final_exposure > 0:
                 action = "tactical_long_candidate"
@@ -234,30 +246,43 @@ def apply_dynamic_strategy_overlay(
             action = "close_if_open_otherwise_hold"
     elif trend_long:
         final_exposure = raw_cap * regime_multiplier * liquidity * correlation
-        if final_exposure > 0:
-            action = "long_candidate"
-        else:
-            action = "hold_or_flat"
+        action = "long_candidate" if final_exposure > 0 else "hold_or_flat"
     elif trend_exit:
         action = "close_if_open_otherwise_hold"
     else:
         action = "hold_or_flat"
 
-    execution = exposure_to_execution(final_exposure, symbol, cfg)
+    leverage = build_leverage_recommendation(
+        action=action,
+        symbol=symbol,
+        regime=regime,
+        donchian_positive_votes=positive_votes,
+        tactical_confirmations=confirmations,
+        effective_exposure=final_exposure,
+        stop_loss_percent=stop_percent,
+        tactical_profile=tactical_profile,
+        cfg=cfg,
+    )
+    represented = float(leverage["represented_effective_exposure"])
+    if action in {"long_candidate", "tactical_long_candidate"} and represented <= 0:
+        action = "hold_or_flat"
+
     result["status"] = "valid" if not invalidations else "suspended"
     result["recommended_action"] = action
     result["recommended_stop_loss_percent"] = stop_percent
-    result["recommended_effective_exposure_before_drawdown"] = float(
-        max(0.0, final_exposure)
-    )
-    result["recommended_exchange_leverage_before_drawdown"] = execution[
+    result["recommended_effective_exposure_before_drawdown"] = represented
+    result["recommended_exchange_leverage_before_drawdown"] = leverage[
         "exchange_leverage"
     ]
-    result["recommended_balance_portion_before_drawdown"] = execution[
+    result["recommended_balance_portion_before_drawdown"] = leverage[
         "target_portion_of_balance"
     ]
-    result["represented_effective_exposure_before_drawdown"] = execution[
-        "represented_effective_exposure"
+    result["represented_effective_exposure_before_drawdown"] = represented
+    result["dynamic_leverage_policy"] = leverage
+    result["tactical_effective_exposure_cap"] = tactical_profile[
+        "effective_exposure_cap"
     ]
-    result["tactical_effective_exposure_cap"] = cfg.tactical_effective_exposure_cap
+    result["estimated_account_risk_at_stop_before_drawdown"] = leverage[
+        "estimated_account_risk_at_stop"
+    ]
     return result
