@@ -6,6 +6,7 @@ on:
       - position-hysteresis-sizing-guard
       - dynamic-leverage-risk-budget
       - exit-reentry-profit-protection
+      - candidate-upgrade-cycle-lock
   pull_request:
     branches:
       - main
@@ -49,9 +50,12 @@ jobs:
             tests/test_strategy_dynamic.py \
             tests/test_leverage_policy.py \
             tests/test_decision_gate.py \
+            tests/test_candidate_upgrade.py \
+            tests/test_candidate_upgrade_gate.py \
             tests/test_decision_guard.py \
             tests/test_execution_audit.py \
             tests/test_execution_policy.py \
             tests/test_minimum_order_sizing.py \
             tests/test_position_management.py \
+            tests/test_worker_cycle_guard.py \
             tests/test_db_json_normalization.py
