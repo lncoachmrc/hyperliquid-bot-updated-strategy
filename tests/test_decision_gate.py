@@ -22,7 +22,7 @@ def test_flat_account_without_candidate_skips_llm():
     assert reason == "flat_account_and_no_executable_candidate"
 
 
-def test_executable_tactical_candidate_invokes_llm():
+def test_executable_tactical_candidate_invokes_llm_without_management_state():
     invoke, reason = should_invoke_llm(
         [_indicator("tactical_long_candidate")],
         {"open_positions": []},
@@ -31,6 +31,48 @@ def test_executable_tactical_candidate_invokes_llm():
     )
     assert invoke is True
     assert reason == "actionable_candidates:ETH"
+
+
+def test_new_flat_candidate_invokes_llm_immediately():
+    invoke, reason = should_invoke_llm(
+        [_indicator("tactical_long_candidate")],
+        {"open_positions": []},
+        "[]",
+        {
+            "new_candidate_symbols": ["ETH"],
+            "llm_review_due": False,
+        },
+    )
+    assert invoke is True
+    assert reason == "new_actionable_candidates:ETH"
+
+
+def test_persistent_flat_candidate_waits_for_scheduled_review():
+    invoke, reason = should_invoke_llm(
+        [_indicator("tactical_long_candidate")],
+        {"open_positions": []},
+        "[]",
+        {
+            "new_candidate_symbols": [],
+            "llm_review_due": False,
+        },
+    )
+    assert invoke is False
+    assert reason == "persistent_candidate_review_not_due"
+
+
+def test_persistent_flat_candidate_invokes_when_review_is_due():
+    invoke, reason = should_invoke_llm(
+        [_indicator("tactical_long_candidate")],
+        {"open_positions": []},
+        "[]",
+        {
+            "new_candidate_symbols": [],
+            "llm_review_due": True,
+        },
+    )
+    assert invoke is True
+    assert reason == "persistent_candidate_scheduled_review"
 
 
 def test_non_executable_candidate_skips_llm():
