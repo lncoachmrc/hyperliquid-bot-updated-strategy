@@ -1,5 +1,4 @@
 """Persistent Railway worker for the existing one-cycle trading entry point."""
-
 from __future__ import annotations
 
 import logging
@@ -11,7 +10,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 import psycopg2
 
@@ -67,6 +66,43 @@ def postgres_advisory_lock(lock_id: int) -> Iterator[bool]:
         connection.close()
 
 
+def seconds_since_last_persisted_cycle() -> Optional[float]:
+    """Return age of the latest persisted bot cycle, or None when no cycle exists."""
+    connection = psycopg2.connect(
+        _database_url(),
+        connect_timeout=10,
+        application_name="hyperliquid_cycle_gap_guard",
+    )
+    connection.autocommit = True
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT EXTRACT(
+                    EPOCH FROM (clock_timestamp() - MAX(created_at))
+                )
+                FROM bot_operations;
+                """
+            )
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return None
+            return max(0.0, float(row[0]))
+    finally:
+        connection.close()
+
+
+def cycle_delay_for_recent_persisted_cycle(
+    last_cycle_age_seconds: Optional[float],
+    minimum_gap_seconds: int,
+) -> float:
+    """Return how long a restart should wait before another trading cycle."""
+    if minimum_gap_seconds <= 0 or last_cycle_age_seconds is None:
+        return 0.0
+    age = max(0.0, float(last_cycle_age_seconds))
+    return max(0.0, float(minimum_gap_seconds) - age)
+
+
 def run_trading_cycle() -> int:
     """Run the unchanged main.py cycle in a fresh child process."""
     result = subprocess.run(
@@ -81,13 +117,18 @@ def run_worker() -> None:
     interval_seconds = env_int("BOT_INTERVAL_SECONDS", 600, minimum=60)
     lock_id = env_int("BOT_LOCK_ID", 7_260_315, minimum=1)
     run_immediately = env_bool("BOT_RUN_IMMEDIATELY", True)
+    minimum_cycle_gap_seconds = env_int(
+        "BOT_MIN_CYCLE_GAP_SECONDS", 120, minimum=0
+    )
 
     initialize_database_with_retry()
     LOGGER.info(
-        "Worker avviato: intervallo=%ss, run_immediately=%s, lock_id=%s.",
+        "Worker avviato: intervallo=%ss, run_immediately=%s, lock_id=%s, "
+        "minimum_cycle_gap=%ss.",
         interval_seconds,
         run_immediately,
         lock_id,
+        minimum_cycle_gap_seconds,
     )
 
     if not run_immediately:
@@ -95,6 +136,7 @@ def run_worker() -> None:
 
     while not STOP_EVENT.is_set():
         cycle_started = time.monotonic()
+        wait_override_seconds: Optional[float] = None
 
         try:
             with postgres_advisory_lock(lock_id) as acquired:
@@ -104,20 +146,42 @@ def run_worker() -> None:
                         lock_id,
                     )
                 else:
-                    return_code = run_trading_cycle()
-                    if return_code == 0:
-                        LOGGER.info("Ciclo terminato con codice 0.")
-                    else:
-                        LOGGER.error(
-                            "Ciclo terminato con codice non nullo: %s.", return_code
+                    last_cycle_age = seconds_since_last_persisted_cycle()
+                    recent_cycle_delay = cycle_delay_for_recent_persisted_cycle(
+                        last_cycle_age,
+                        minimum_cycle_gap_seconds,
+                    )
+                    if recent_cycle_delay > 0:
+                        # A Railway restart/deploy may start the worker immediately
+                        # after a cycle that has already persisted a decision. Wait
+                        # only the remaining guard interval, then reevaluate under
+                        # the advisory lock rather than creating a duplicate cycle.
+                        wait_override_seconds = recent_cycle_delay
+                        LOGGER.warning(
+                            "Ciclo rinviato dal recent-cycle guard: ultimo ciclo "
+                            "persistito %.1fs fa; attendo altri %.1fs (minimo=%ss).",
+                            last_cycle_age or 0.0,
+                            recent_cycle_delay,
+                            minimum_cycle_gap_seconds,
                         )
+                    else:
+                        return_code = run_trading_cycle()
+                        if return_code == 0:
+                            LOGGER.info("Ciclo terminato con codice 0.")
+                        else:
+                            LOGGER.error(
+                                "Ciclo terminato con codice non nullo: %s.", return_code
+                            )
         except Exception:  # noqa: BLE001
             LOGGER.exception(
                 "Errore nel worker; il servizio resta attivo per il ciclo successivo."
             )
 
         elapsed = time.monotonic() - cycle_started
-        STOP_EVENT.wait(max(0.0, interval_seconds - elapsed))
+        if wait_override_seconds is not None:
+            STOP_EVENT.wait(max(1.0, wait_override_seconds))
+        else:
+            STOP_EVENT.wait(max(0.0, interval_seconds - elapsed))
 
     LOGGER.info("Worker arrestato correttamente.")
 
