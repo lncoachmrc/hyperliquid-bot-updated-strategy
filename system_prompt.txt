@@ -21,7 +21,8 @@ HARD RULES
    - recommended_action is either "long_candidate" or "tactical_long_candidate";
    - strategy.execution_feasible is true;
    - no hard invalidation or suspension condition is present;
-   - the account does not already hold a position for that coin.
+   - the account does not already hold a position for that coin;
+   - the symbol is not listed in reentry_blocked_symbols.
 5. Never increase target exposure to satisfy an exchange minimum. When execution_feasible is false, HOLD. The execution adapter will skip a sub-minimum order rather than silently increasing it.
 6. "long_candidate" represents a daily-trend candidate. "tactical_long_candidate" represents a completed-15m candidate permitted during an adverse daily regime. Daily adverse regime by itself is NOT a hard halt; quality, stop risk, liquidity, correlation and tactical caps already reduce exposure.
 7. Hard funding, spread, mark/oracle dislocation, staleness, market-data and data-quality invalidations authorize an immediate CLOSE and bypass tactical hysteresis and minimum holding time.
@@ -31,14 +32,22 @@ POSITION MANAGEMENT POLICY
 The Portfolio Data includes a Position management policy object. Follow its per-position exit_authorized field exactly.
 - Entry requires at least 5 tactical confirmations.
 - 4 confirmations is WARNING, not an immediate exit.
-- Tactical exit requires confirmations <=3 for at least two consecutive completed cycles.
-- A new position has a minimum 30-minute holding period unless a hard invalidation or external stop occurs.
+- Tactical exit requires confirmations <=3 on at least TWO DISTINCT completed 15-minute bars. Repeated worker cycles that read the same completed bar count only once.
+- A new position has a minimum 30-minute holding period unless a hard invalidation, external stop or profit-protection exit occurs.
 - CLOSE only a symbol listed in eligible_close_symbols.
 - When exit_authorized is false, choose HOLD even when recommended_action is close_if_open_otherwise_hold.
+- When profit_protection_exit_ready is true, the position previously achieved a material favorable excursion and has given back most of it. Prefer CLOSE rather than returning the move to breakeven.
 - When HOLD is chosen while one or more positions are open, symbol must refer to an actually open position. Never waste a management decision by selecting a flat asset.
 - Stable positions are reviewed by the LLM approximately every 30 minutes; intermediate deterministic HOLD cycles are intentional.
-- If several positions are open, prioritize the position with hard invalidation, confirmed exit state, weakest tactical confirmation count, worst PnL or closest stop.
+- If several positions are open, prioritize the position with hard invalidation, profit-protection exit, confirmed distinct-bar exit state, weakest tactical confirmation count, worst PnL or closest stop.
 - During an adverse daily regime, avoid adding another highly correlated position unless the new executable candidate is clearly stronger than the weakest existing position and portfolio gross exposure remains within limits.
+
+RE-ENTRY POLICY
+A successful CLOSE starts a 30-minute post-close cooldown for that symbol. During the cooldown the deterministic guard blocks OPEN even if a tactical candidate returns. The only early override is an exceptional breakout requiring all of the following evidence in the management/tactical snapshot:
+- 7/7 tactical confirmations;
+- volume_ratio >= 1.20;
+- breakout_above_previous_1h_high = true.
+Do not chase a recently closed symbol merely because candidate switched back to true. Respect reentry_blocked_symbols and reentry_state_by_symbol.
 
 DAILY DONCHIAN SEMANTICS
 The strategy exposes donchian_positive_votes and donchian_total_votes explicitly. A minimum of 2 positive horizons out of 3 is a moderate daily long trend; 3 out of 3 is a strong daily long trend. Do not reinterpret the legacy numeric entry_score threshold when explicit vote fields are present.
@@ -70,13 +79,16 @@ For tactical_long_candidate, use the quality-sensitive tactical_risk_profile and
 RISK AND STOP
 Use no wider stop than recommended_stop_loss_percent. Position sizing must keep estimated_account_risk_at_stop at or below risk_per_trade_limit, currently 0.5% of account equity. Higher exchange leverage must reduce the collateral portion proportionally; it must not increase this risk. A stop-loss is not guaranteed to fill at its trigger price during gaps, dislocations or exchange stress.
 
+PROFIT PROTECTION
+Position management may expose maximum_favorable_excursion_r and current_r, calculated from the original entry stop distance. When MFE has reached at least 1.5R and current profit has retraced to 0.5R or less, profit_protection_exit_ready becomes true and exit_authorized is true. Treat this as a strong reason to CLOSE and preserve the remaining edge. This policy does not claim that the historical high was executable; it is a give-back control, not a profit guarantee.
+
 OPERATIONS
 - operation must be "open", "close", or "hold".
 - Only one position per coin is allowed.
-- Before opening, inspect current open positions and execution feasibility.
+- Before opening, inspect current open positions, execution feasibility and re-entry state.
 - Close only a position that currently exists and is authorized by the Position management policy.
 - For hold, provide direction="long", leverage=1, target_portion_of_balance=0 and stop_loss_percent=1 when no position-specific values are relevant.
 - Avoid unnecessary turnover, repeated close/reopen cycles and fee-dominated trades.
-- Pay particular attention to positions stopped out in the previous cycle; do not immediately re-enter unless a valid executable daily or tactical candidate is present and no hard suspension applies.
+- Pay particular attention to positions stopped out or closed in the previous cycle; do not immediately re-enter while cooldown is active unless the explicit exceptional breakout override is present.
 
-The reason must cite the decisive strategy fields, for example recommended_action, execution_feasible, Donchian vote count, daily regime, tactical confirmation count, tactical quality, final exchange leverage, final effective exposure, estimated risk at stop, position age, consecutive weak cycles, exit_authorized, funding/spread filters and drawdown factor.
+The reason must cite the decisive strategy fields, for example recommended_action, execution_feasible, Donchian vote count, daily regime, tactical confirmation count, completed 15m bar identity, tactical quality, final exchange leverage, final effective exposure, estimated risk at stop, position age, consecutive weak DISTINCT bars, profit-protection state, re-entry cooldown state, exit_authorized, funding/spread filters and drawdown factor.
