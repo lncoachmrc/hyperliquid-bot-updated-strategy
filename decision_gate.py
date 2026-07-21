@@ -78,6 +78,13 @@ def should_invoke_llm(
         return False, "stable_open_position_review_not_due"
 
     candidates = _actionable_symbols(indicators)
+    if isinstance(management_state, dict):
+        blocked = {
+            str(item).upper()
+            for item in (management_state.get("reentry_blocked_symbols") or [])
+        }
+        candidates = [symbol for symbol in candidates if symbol not in blocked]
+
     if not candidates:
         return False, "flat_account_and_no_executable_candidate"
 
