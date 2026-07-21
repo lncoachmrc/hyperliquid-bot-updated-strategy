@@ -5,6 +5,7 @@ on:
     branches:
       - position-hysteresis-sizing-guard
       - dynamic-leverage-risk-budget
+      - exit-reentry-profit-protection
   pull_request:
     branches:
       - main
