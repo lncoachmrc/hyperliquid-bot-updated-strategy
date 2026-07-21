@@ -12,7 +12,7 @@ from typing import Dict, Tuple
 @dataclass(frozen=True)
 class StrategyConfig:
     name: str = "donchian_tsmom_vol_target_long_bias"
-    version: str = "1.4.0"
+    version: str = "1.5.0"
     symbols: Tuple[str, ...] = ("BTC", "ETH", "SOL")
     timeframe: str = "1d"
 
@@ -61,6 +61,14 @@ class StrategyConfig:
     )
     tactical_stop_atr_multiple: float = 2.0
     tactical_max_stop_percent: float = 5.0
+
+    # A persistent executable candidate normally waits for the 30-minute LLM
+    # cadence. Material quality upgrades bypass that cooldown: 5->6 / 6->7
+    # confirmations, a higher leverage tier, an improved Donchian vote count or
+    # >=20% more strategy-approved effective exposure.
+    candidate_upgrade_min_confirmations: int = 6
+    candidate_upgrade_min_confirmation_gain: int = 1
+    candidate_upgrade_effective_exposure_increase_fraction: float = 0.20
 
     # Position-management hysteresis. Weakness must be confirmed by distinct
     # completed 15m candles, never by repeated worker cycles reading the same bar.
