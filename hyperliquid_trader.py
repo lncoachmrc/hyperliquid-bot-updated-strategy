@@ -1,7 +1,7 @@
 import json
 import time
-from decimal import Decimal, ROUND_DOWN
-from typing import Any, Dict, Tuple
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from typing import Any, Dict, Iterable, Tuple
 
 import eth_account
 from eth_account.signers.local import LocalAccount
@@ -9,8 +9,13 @@ from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
 
+from strategy_config import DEFAULT_STRATEGY_CONFIG
+
 
 SPOT_COLLATERAL_ACCOUNT_MODES = {"unifiedAccount", "portfolioMargin"}
+MIN_PERP_ORDER_NOTIONAL = Decimal(
+    str(DEFAULT_STRATEGY_CONFIG.minimum_perp_order_notional_usd)
+)
 
 
 def _as_decimal(value: Any, default: str = "0") -> Decimal:
@@ -123,6 +128,76 @@ class HyperLiquidTrader:
     def _round_size(self, size: Decimal, decimals: int) -> float:
         size = size.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
         return float(f"{size:.{decimals}f}")
+
+    @staticmethod
+    def _minimum_executable_size(
+        symbol_info: Dict[str, Any], mark_price: Decimal
+    ) -> Tuple[Decimal, int, Decimal]:
+        """Return minimum executable size, decimals and size increment.
+
+        The minimum combines the market's size precision, any explicit minSz
+        metadata and Hyperliquid's $10 minimum perp notional.
+        """
+        if mark_price <= 0:
+            raise ValueError("mark price must be positive")
+        size_decimals = int(symbol_info.get("szDecimals", 8))
+        increment = Decimal(10) ** -size_decimals
+        explicit_minimum = _as_decimal(symbol_info.get("minSz"), str(increment))
+        if explicit_minimum <= 0:
+            explicit_minimum = increment
+        notional_minimum_size = (MIN_PERP_ORDER_NOTIONAL / mark_price).quantize(
+            increment, rounding=ROUND_UP
+        )
+        minimum_size = max(increment, explicit_minimum, notional_minimum_size)
+        return minimum_size, size_decimals, increment
+
+    def get_execution_constraints(
+        self, symbols: Iterable[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Expose real executable minimums before the LLM chooses an order."""
+        balance_details = self._get_account_balance_details()
+        available_balance = Decimal(str(balance_details["available_balance_usd"]))
+        mids = self.info.all_mids()
+        constraints: Dict[str, Dict[str, Any]] = {}
+
+        for raw_symbol in symbols:
+            symbol = str(raw_symbol).upper()
+            symbol_info = next(
+                (item for item in self.meta.get("universe", []) if item.get("name") == symbol),
+                None,
+            )
+            mark_raw = mids.get(symbol)
+            if not symbol_info or mark_raw is None or available_balance <= 0:
+                constraints[symbol] = {
+                    "available": False,
+                    "available_balance_usd": float(available_balance),
+                    "reason": "missing_symbol_metadata_mark_or_balance",
+                }
+                continue
+
+            mark_price = Decimal(str(mark_raw))
+            minimum_size, size_decimals, increment = self._minimum_executable_size(
+                symbol_info, mark_price
+            )
+            minimum_notional = minimum_size * mark_price
+            minimum_effective_exposure = minimum_notional / available_balance
+            constraints[symbol] = {
+                "available": True,
+                "available_balance_usd": float(available_balance),
+                "mark_price": float(mark_price),
+                "size_decimals": size_decimals,
+                "size_increment": float(increment),
+                "minimum_executable_size": float(minimum_size),
+                "minimum_executable_notional_usd": float(minimum_notional),
+                "minimum_executable_effective_exposure": float(
+                    minimum_effective_exposure
+                ),
+                "minimum_balance_portion_at_1x": float(minimum_effective_exposure),
+                "minimum_balance_portion_at_2x": float(
+                    minimum_effective_exposure / Decimal("2")
+                ),
+            }
+        return constraints
 
     def _get_account_mode(self) -> str:
         """Query Hyperliquid's userAbstraction endpoint with a safe fallback."""
@@ -296,13 +371,6 @@ class HyperLiquidTrader:
         sl_percent = float(stop_loss_percent)
         sl_price_explicit = order_json.get("stop_loss_price")
 
-        leverage_result = self.set_leverage_for_symbol(
-            symbol, leverage, is_cross=True
-        )
-        if leverage_result.get("status") != "ok":
-            print(f"⚠️ Warning leva: {leverage_result}")
-        time.sleep(0.5)
-
         balance_details = self._get_account_balance_details()
         balance_usd = Decimal(str(balance_details["available_balance_usd"]))
         print(
@@ -327,13 +395,35 @@ class HyperLiquidTrader:
         if not symbol_info:
             raise RuntimeError(f"Symbol {symbol} non trovato nei metadata")
 
-        min_size = Decimal(str(symbol_info.get("minSz", "0.001")))
-        sz_decimals = int(symbol_info.get("szDecimals", 8))
-        quantizer = Decimal(10) ** -sz_decimals
+        minimum_size, sz_decimals, quantizer = self._minimum_executable_size(
+            symbol_info, mark_px_dec
+        )
         size_decimal = raw_size.quantize(quantizer, rounding=ROUND_DOWN)
-        if size_decimal < min_size:
-            print(f"⚠️ Size calcolata < min size. Uso min size: {min_size}")
-            size_decimal = min_size
+        minimum_notional = minimum_size * mark_px_dec
+        if size_decimal < minimum_size:
+            print(
+                "[HyperLiquidTrader] OPEN saltato: la size richiesta è inferiore "
+                "al minimo realmente eseguibile; non viene aumentata automaticamente."
+            )
+            return {
+                "status": "skipped",
+                "reason": "requested_order_below_minimum_executable_size",
+                "symbol": symbol,
+                "requested_notional_usd": float(notional),
+                "requested_size": float(size_decimal),
+                "minimum_executable_size": float(minimum_size),
+                "minimum_executable_notional_usd": float(minimum_notional),
+                "size_decimals": sz_decimals,
+            }
+
+        # Leverage is changed only after the order has passed all feasibility
+        # checks, so an impossible OPEN does not modify exchange account state.
+        leverage_result = self.set_leverage_for_symbol(
+            symbol, leverage, is_cross=True
+        )
+        if leverage_result.get("status") != "ok":
+            print(f"⚠️ Warning leva: {leverage_result}")
+        time.sleep(0.5)
 
         size_float = float(size_decimal)
         is_buy = direction == "long"
@@ -428,6 +518,3 @@ class HyperLiquidTrader:
             print(f"\nSymbol: {perp['name']}")
             print(f"  Min Size: {perp.get('minSz', 'N/A')}")
             print(f"  Size Decimals: {perp.get('szDecimals', 'N/A')}")
-            print(f"  Price Decimals: {perp.get('pxDecimals', 'N/A')}")
-            print(f"  Max Leverage: {perp.get('maxLeverage', 'N/A')}")
-            print(f"  Only Isolated: {perp.get('onlyIsolated', False)}")
