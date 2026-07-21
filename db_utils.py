@@ -194,8 +194,12 @@ def _normalize_json_arg(value: Any) -> Any:
 def _to_plain_number(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, bool):
+        return None
     if np is not None:
         try:
+            if isinstance(value, np.bool_):
+                return None
             if isinstance(value, np.generic):
                 return float(value)
         except Exception:
@@ -216,6 +220,14 @@ def _normalize_for_json(value: Any) -> Any:
         return [_normalize_for_json(item) for item in value]
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, bool):
+        return value
+    if np is not None:
+        try:
+            if isinstance(value, np.bool_):
+                return bool(value)
+        except Exception:
+            pass
     numeric = _to_plain_number(value)
     if numeric is not None:
         return numeric
@@ -294,7 +306,7 @@ def get_account_drawdown_state(
 ) -> Dict[str, Any]:
     """Reuse account_snapshots to calculate the strategy drawdown factor.
 
-    A database failure does not fabricate a value.  The returned availability
+    A database failure does not fabricate a value. The returned availability
     flag tells the LLM that the factor could not be verified.
     """
     try:
