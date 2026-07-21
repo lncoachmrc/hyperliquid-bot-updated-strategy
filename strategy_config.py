@@ -12,7 +12,7 @@ from typing import Dict, Tuple
 @dataclass(frozen=True)
 class StrategyConfig:
     name: str = "donchian_tsmom_vol_target_long_bias"
-    version: str = "1.3.0"
+    version: str = "1.4.0"
     symbols: Tuple[str, ...] = ("BTC", "ETH", "SOL")
     timeframe: str = "1d"
 
@@ -47,7 +47,7 @@ class StrategyConfig:
     tactical_min_confirmations: int = 5
     tactical_warning_confirmations: int = 4
     tactical_exit_confirmations: int = 3
-    tactical_exit_consecutive_cycles: int = 2
+    tactical_exit_consecutive_cycles: int = 2  # interpreted as DISTINCT 15m bars
     tactical_volume_ratio_min: float = 0.80
     tactical_rsi_min: float = 50.0
     tactical_rsi_max: float = 80.0
@@ -62,12 +62,24 @@ class StrategyConfig:
     tactical_stop_atr_multiple: float = 2.0
     tactical_max_stop_percent: float = 5.0
 
-    # Position-management hysteresis. A tactical deterioration does not produce
-    # an immediate close: 4 confirmations is a warning, while <=3 must persist
-    # for two completed cycles. Hard invalidations and external stops bypass the
-    # minimum holding period.
+    # Position-management hysteresis. Weakness must be confirmed by distinct
+    # completed 15m candles, never by repeated worker cycles reading the same bar.
     minimum_position_hold_minutes: int = 30
     stable_position_llm_review_minutes: int = 30
+
+    # Re-entry protection. A recently closed symbol is blocked for 30 minutes.
+    # A truly exceptional breakout may bypass the cooldown only with 7/7 tactical
+    # confirmations, volume expansion and a close above the previous 1h high.
+    post_close_reentry_cooldown_minutes: int = 30
+    reentry_breakout_override_confirmations: int = 7
+    reentry_breakout_override_volume_ratio: float = 1.20
+    reentry_breakout_lookback_bars: int = 4
+
+    # Profit give-back protection uses R multiples based on the original stop.
+    # Once a position has achieved >=1.5R MFE, a retracement to <=0.5R becomes
+    # eligible for an immediate management review/close, even before 30 minutes.
+    profit_protection_trigger_r: float = 1.50
+    profit_protection_floor_r: float = 0.50
 
     # Hyperliquid rejects perp orders below $10 notional. The execution adapter
     # also respects market size precision and never silently increases a request.
