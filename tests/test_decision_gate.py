@@ -47,6 +47,21 @@ def test_new_flat_candidate_invokes_llm_immediately():
     assert reason == "new_actionable_candidates:ETH"
 
 
+def test_reentry_cooldown_blocks_candidate_before_llm_call():
+    invoke, reason = should_invoke_llm(
+        [_indicator("tactical_long_candidate")],
+        {"open_positions": []},
+        "[]",
+        {
+            "new_candidate_symbols": [],
+            "reentry_blocked_symbols": ["ETH"],
+            "llm_review_due": True,
+        },
+    )
+    assert invoke is False
+    assert reason == "flat_account_and_no_executable_candidate"
+
+
 def test_persistent_flat_candidate_waits_for_scheduled_review():
     invoke, reason = should_invoke_llm(
         [_indicator("tactical_long_candidate")],
@@ -113,6 +128,20 @@ def test_position_exit_event_invokes_llm_immediately():
     )
     assert invoke is True
     assert reason.startswith("position_event:")
+
+
+def test_profit_protection_event_invokes_llm_immediately():
+    invoke, reason = should_invoke_llm(
+        [_indicator("tactical_long_candidate")],
+        {"open_positions": [{"symbol": "ETH", "side": "long"}]},
+        "[]",
+        {
+            "immediate_llm_reasons": ["ETH:profit_protection_exit"],
+            "llm_review_due": False,
+        },
+    )
+    assert invoke is True
+    assert "profit_protection_exit" in reason
 
 
 def test_scheduled_position_review_invokes_llm():
