@@ -31,7 +31,7 @@ def test_subminimum_candidate_is_marked_non_executable():
     assert strategy["execution_feasible"] is False
     assert (
         strategy["execution_feasibility"]["reason"]
-        == "recommended_order_below_exchange_minimum"
+        == "final_order_below_exchange_minimum"
     )
 
 
@@ -41,3 +41,15 @@ def test_candidate_above_minimum_is_executable():
     strategy = indicators[0]["strategy"]
     assert strategy["execution_feasible"] is True
     assert strategy["execution_feasibility"]["reason"] == "executable"
+
+
+def test_drawdown_can_make_an_otherwise_valid_order_non_executable():
+    indicators = [_indicator(0.03)]
+    annotate_execution_feasibility(
+        indicators,
+        _constraints(),
+        portfolio_drawdown_factor=0.5,
+    )
+    strategy = indicators[0]["strategy"]
+    assert strategy["execution_feasible"] is False
+    assert strategy["execution_feasibility"]["final_effective_exposure"] == 0.015
