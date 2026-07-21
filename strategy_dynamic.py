@@ -49,6 +49,22 @@ def _daily_trend_strength(positive_votes: int, total_votes: int, minimum_votes: 
     return "strong_adverse"
 
 
+def _bar_timestamp(frame_15m: pd.DataFrame, offset: int = -1) -> pd.Timestamp | None:
+    try:
+        if "timestamp" in frame_15m.columns:
+            value = frame_15m.iloc[offset].get("timestamp")
+        else:
+            value = frame_15m.index[offset]
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        else:
+            timestamp = timestamp.tz_convert("UTC")
+        return timestamp
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def build_tactical_intraday_snapshot(
     frame_15m: pd.DataFrame,
     cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG,
@@ -136,6 +152,23 @@ def build_tactical_intraday_snapshot(
         )
     )
 
+    current_open_time = _bar_timestamp(frame_15m, -1)
+    current_close_time = (
+        current_open_time + pd.Timedelta(minutes=15)
+        if current_open_time is not None
+        else None
+    )
+    high_series = frame_15m["high"] if "high" in frame_15m.columns else frame_15m["close"]
+    low_series = frame_15m["low"] if "low" in frame_15m.columns else frame_15m["close"]
+    bar_high = _finite_float(high_series.iloc[-1]) or price
+    bar_low = _finite_float(low_series.iloc[-1]) or price
+    lookback_bars = max(1, int(cfg.reentry_breakout_lookback_bars))
+    prior_high_slice = high_series.iloc[-(lookback_bars + 1):-1]
+    previous_lookback_high = _finite_float(prior_high_slice.max()) if not prior_high_slice.empty else None
+    breakout_above_previous_1h_high = bool(
+        previous_lookback_high is not None and price > previous_lookback_high
+    )
+
     return {
         "available": True,
         "candidate": candidate,
@@ -153,6 +186,12 @@ def build_tactical_intraday_snapshot(
         "momentum_1h_pct": momentum_1h_pct,
         "volume_ratio": volume_ratio,
         "recommended_stop_loss_percent": stop_percent,
+        "completed_bar_open_time": current_open_time.isoformat() if current_open_time else None,
+        "completed_bar_close_time": current_close_time.isoformat() if current_close_time else None,
+        "bar_high": bar_high,
+        "bar_low": bar_low,
+        "previous_1h_high": previous_lookback_high,
+        "breakout_above_previous_1h_high": breakout_above_previous_1h_high,
     }
 
 
