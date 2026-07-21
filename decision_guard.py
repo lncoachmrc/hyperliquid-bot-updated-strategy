@@ -2,8 +2,8 @@
 
 The LLM still chooses OPEN/CLOSE/HOLD. This guard enforces deterministic
 constraints that execution must never violate: close hysteresis, minimum hold,
-one position per coin, executable candidate status, portfolio gross exposure,
-stop-risk budget and the dynamic leverage tier selected by the strategy.
+post-close re-entry cooldown, one position per coin, executable candidate status,
+portfolio gross exposure, stop-risk budget and dynamic leverage limits.
 """
 from __future__ import annotations
 
@@ -247,6 +247,10 @@ def apply_decision_guard(
         str(item).upper()
         for item in (management_state.get("eligible_close_symbols") or [])
     }
+    reentry_blocked = {
+        str(item).upper()
+        for item in (management_state.get("reentry_blocked_symbols") or [])
+    }
     strategies = _strategy_map(indicators)
 
     if operation == "hold":
@@ -274,8 +278,8 @@ def apply_decision_guard(
                 guarded,
                 symbol=symbol,
                 guard_reason=(
-                    "CLOSE blocked by minimum-hold/tactical-hysteresis policy; "
-                    "no hard invalidation or confirmed two-cycle exit was present."
+                    "CLOSE blocked by minimum-hold/unique-15m-bar hysteresis policy; "
+                    "no hard invalidation, profit-protection exit or confirmed distinct-bar exit was present."
                 ),
                 original=original,
             )
@@ -287,6 +291,15 @@ def apply_decision_guard(
                 guarded,
                 symbol=symbol,
                 guard_reason="OPEN blocked because a position for this symbol already exists.",
+                original=original,
+            )
+        if symbol in reentry_blocked:
+            return _to_safe_hold(
+                guarded,
+                symbol=preferred if open_symbols else symbol,
+                guard_reason=(
+                    "OPEN blocked by post-close re-entry cooldown; no exceptional 7/7 volume-confirmed breakout override is active."
+                ),
                 original=original,
             )
         strategy = strategies.get(symbol) or {}
