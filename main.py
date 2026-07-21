@@ -7,6 +7,7 @@ from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
 from runtime_config import env_bool
+from candidate_upgrade import annotate_candidate_quality_upgrades
 from decision_gate import deterministic_hold, should_invoke_llm
 from decision_guard import apply_decision_guard
 from execution_policy import (
@@ -128,6 +129,16 @@ try:
         indicators_json,
         account_status,
         management_history,
+    )
+    # Persistent candidates normally follow the 30-minute review cadence. A
+    # material quality upgrade (e.g. 5->6, 6->7 confirmations, higher Donchian
+    # vote/leverage tier, or >=20% more approved exposure) earns an immediate LLM
+    # review without changing any risk or execution limit.
+    annotate_candidate_quality_upgrades(
+        indicators_json,
+        account_status,
+        management_history,
+        management_state,
     )
 
     invoke_llm, gate_reason = should_invoke_llm(
