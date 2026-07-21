@@ -1,22 +1,46 @@
+import pytest
+
 from decision_guard import apply_decision_guard
 
 
 def _account():
     return {
+        "balance_usd": 3000.0,
         "open_positions": [
-            {"symbol": "ETH", "side": "long", "pnl_usd": 0.1}
-        ]
+            {
+                "symbol": "ETH",
+                "side": "long",
+                "size": 0.1,
+                "mark_price": 1900.0,
+                "pnl_usd": 0.1,
+            }
+        ],
     }
 
 
-def _indicators(*, executable=True):
+def _btc_strategy(*, executable=True, final_exposure=0.5, leverage=3):
+    return {
+        "recommended_action": "tactical_long_candidate",
+        "execution_feasible": executable,
+        "recommended_stop_loss_percent": 1.0,
+        "execution_feasibility": {
+            "final_effective_exposure": final_exposure,
+            "final_exchange_leverage": leverage,
+            "live_max_leverage": 50,
+            "bot_absolute_max_leverage": 10,
+        },
+    }
+
+
+def _indicators(*, executable=True, final_exposure=0.5, leverage=3):
     return [
         {
             "ticker": "BTC",
-            "strategy": {
-                "recommended_action": "tactical_long_candidate",
-                "execution_feasible": executable,
-            },
+            "strategy": _btc_strategy(
+                executable=executable,
+                final_exposure=final_exposure,
+                leverage=leverage,
+            ),
         },
         {
             "ticker": "ETH",
@@ -100,9 +124,91 @@ def test_non_executable_open_is_blocked():
     }
     guarded = apply_decision_guard(
         decision,
-        {"open_positions": []},
+        {"balance_usd": 3000.0, "open_positions": []},
         _indicators(executable=False),
         {"preferred_hold_symbol": "BTC", "eligible_close_symbols": []},
     )
     assert guarded["operation"] == "hold"
     assert guarded["decision_guard_adjusted"] is True
+
+
+def test_open_is_represented_with_policy_leverage_without_changing_exposure():
+    decision = {
+        "operation": "open",
+        "symbol": "BTC",
+        "direction": "long",
+        "target_portion_of_balance": 0.5,
+        "leverage": 1,
+        "stop_loss_percent": 1.0,
+        "reason": "open strong setup",
+    }
+    guarded = apply_decision_guard(
+        decision,
+        {"balance_usd": 3000.0, "open_positions": []},
+        _indicators(final_exposure=0.5, leverage=3),
+        {"preferred_hold_symbol": "BTC", "eligible_close_symbols": []},
+    )
+    assert guarded["operation"] == "open"
+    assert guarded["leverage"] == 3
+    assert guarded["target_portion_of_balance"] == pytest.approx(1 / 6)
+    assert (
+        guarded["target_portion_of_balance"] * guarded["leverage"]
+        == pytest.approx(0.5)
+    )
+    assert guarded["dynamic_leverage_execution"]["estimated_account_risk_at_stop"] == pytest.approx(0.005)
+
+
+def test_excessive_llm_leverage_and_exposure_are_clamped():
+    decision = {
+        "operation": "open",
+        "symbol": "BTC",
+        "direction": "long",
+        "target_portion_of_balance": 0.1,
+        "leverage": 10,
+        "stop_loss_percent": 2.0,
+        "reason": "too aggressive",
+    }
+    guarded = apply_decision_guard(
+        decision,
+        {"balance_usd": 3000.0, "open_positions": []},
+        _indicators(final_exposure=0.5, leverage=3),
+        {"preferred_hold_symbol": "BTC", "eligible_close_symbols": []},
+    )
+    assert guarded["leverage"] == 3
+    assert guarded["stop_loss_percent"] == 1.0
+    assert guarded["target_portion_of_balance"] == pytest.approx(1 / 6)
+    assert guarded["decision_guard_adjusted"] is True
+
+
+def test_portfolio_gross_cap_reduces_new_effective_exposure():
+    account = {
+        "balance_usd": 3000.0,
+        "open_positions": [
+            {
+                "symbol": "ETH",
+                "size": 2.0,
+                "mark_price": 2100.0,
+                "entry_price": 2000.0,
+                "side": "long",
+            }
+        ],
+    }
+    # Existing gross exposure is 1.4x, leaving only 0.1x under the 1.5x cap.
+    decision = {
+        "operation": "open",
+        "symbol": "BTC",
+        "direction": "long",
+        "target_portion_of_balance": 0.5,
+        "leverage": 1,
+        "stop_loss_percent": 1.0,
+        "reason": "open",
+    }
+    guarded = apply_decision_guard(
+        decision,
+        account,
+        _indicators(final_exposure=0.5, leverage=3),
+        {"preferred_hold_symbol": "ETH", "eligible_close_symbols": []},
+    )
+    assert guarded["leverage"] == 3
+    assert guarded["target_portion_of_balance"] == pytest.approx(0.1 / 3)
+    assert guarded["dynamic_leverage_execution"]["final_effective_exposure"] == pytest.approx(0.1)
