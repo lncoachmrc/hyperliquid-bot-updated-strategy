@@ -23,8 +23,11 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 def annotate_execution_feasibility(
     indicators: Iterable[Dict[str, Any]],
     constraints: Mapping[str, Dict[str, Any]],
+    *,
+    portfolio_drawdown_factor: float = 1.0,
 ) -> None:
     """Mutate indicator strategy snapshots with auditable execution limits."""
+    drawdown_factor = max(0.0, min(1.0, _as_float(portfolio_drawdown_factor, 1.0)))
     for item in indicators:
         if not isinstance(item, dict):
             continue
@@ -41,18 +44,19 @@ def annotate_execution_feasibility(
         minimum_effective_exposure = _as_float(
             constraint.get("minimum_executable_effective_exposure")
         )
-        recommended_effective_exposure = _as_float(
+        recommended_before_drawdown = _as_float(
             strategy.get("represented_effective_exposure_before_drawdown")
             or strategy.get("recommended_effective_exposure_before_drawdown")
         )
-        recommended_notional = recommended_effective_exposure * available_balance
+        final_effective_exposure = recommended_before_drawdown * drawdown_factor
+        recommended_notional = final_effective_exposure * available_balance
         action = strategy.get("recommended_action")
         candidate = action in CANDIDATE_ACTIONS
         feasible = bool(
             candidate
             and constraint.get("available") is True
             and recommended_notional + 1e-9 >= minimum_notional
-            and recommended_effective_exposure + 1e-12
+            and final_effective_exposure + 1e-12
             >= minimum_effective_exposure
         )
 
@@ -60,7 +64,9 @@ def annotate_execution_feasibility(
         strategy["execution_feasibility"] = {
             "candidate_action": candidate,
             "available": constraint.get("available", False),
-            "recommended_effective_exposure": recommended_effective_exposure,
+            "recommended_effective_exposure_before_drawdown": recommended_before_drawdown,
+            "portfolio_drawdown_factor": drawdown_factor,
+            "final_effective_exposure": final_effective_exposure,
             "recommended_order_notional_usd": recommended_notional,
             "minimum_executable_effective_exposure": minimum_effective_exposure,
             "minimum_executable_notional_usd": minimum_notional,
@@ -72,7 +78,7 @@ def annotate_execution_feasibility(
                 else (
                     "not_a_candidate"
                     if not candidate
-                    else "recommended_order_below_exchange_minimum"
+                    else "final_order_below_exchange_minimum"
                 )
             ),
         }
