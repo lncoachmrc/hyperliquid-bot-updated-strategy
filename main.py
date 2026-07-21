@@ -8,6 +8,15 @@ from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
 from runtime_config import env_bool
 from decision_gate import deterministic_hold, should_invoke_llm
+from decision_guard import apply_decision_guard
+from execution_policy import (
+    annotate_execution_feasibility,
+    compact_execution_feasibility,
+)
+from position_management import (
+    build_position_management_state,
+    load_management_history,
+)
 from execution_audit import (
     attach_post_snapshot,
     ensure_execution_audit_schema,
@@ -71,9 +80,6 @@ try:
     # the cycle fails before any live order can be sent.
     ensure_execution_audit_schema()
 
-    # Market/strategy evidence is always refreshed. Expensive news, sentiment,
-    # forecast and LLM calls are deferred until the cheap deterministic gate says
-    # an actionable candidate or an open-position management decision exists.
     tickers = ["BTC", "ETH", "SOL"]
     indicators_txt, indicators_json = analyze_multiple_tickers(
         tickers,
@@ -81,6 +87,15 @@ try:
     )
 
     account_status = bot.get_account_status()
+
+    # Evaluate real exchange minimums before deciding whether an LLM call or an
+    # OPEN can add value. A sub-minimum recommendation is marked non-executable;
+    # it is never silently increased to the minimum size.
+    execution_constraints = bot.get_execution_constraints(tickers)
+    annotate_execution_feasibility(indicators_json, execution_constraints)
+    execution_feasibility = compact_execution_feasibility(indicators_json)
+    account_status["execution_constraints"] = execution_constraints
+
     stop_losses = check_stop_loss(account_status)
 
     pre_snapshot_id = db_utils.log_account_status(account_status)
@@ -90,10 +105,23 @@ try:
         current_balance=account_status["balance_usd"]
     )
 
+    open_symbols = [
+        position.get("symbol")
+        for position in (account_status.get("open_positions") or [])
+        if position.get("symbol")
+    ]
+    management_history = load_management_history(tickers, open_symbols)
+    management_state = build_position_management_state(
+        indicators_json,
+        account_status,
+        management_history,
+    )
+
     invoke_llm, gate_reason = should_invoke_llm(
         indicators_json,
         account_status,
         stop_losses,
+        management_state,
     )
     print(f"[decision_gate] invoke_llm={invoke_llm}, reason={gate_reason}")
 
@@ -111,6 +139,7 @@ try:
         forecasts_txt, forecasts_json = get_crypto_forecasts()
 
         msg_info = f"""<indicatori>\n{indicators_txt}\n</indicatori>\n\n
+        <execution_feasibility>\n{json.dumps(execution_feasibility)}\n</execution_feasibility>\n\n
         <news>\n{news_txt}</news>\n\n
         <sentiment>\n{sentiment_txt}\n</sentiment>\n\n
         <forecast>\n{forecasts_txt}\n</forecast>\n\n"""
@@ -118,6 +147,7 @@ try:
         portfolio_data = (
             f"{json.dumps(account_status)}\n"
             f"Portfolio drawdown state: {json.dumps(drawdown_state)}\n"
+            f"Position management policy: {json.dumps(management_state)}\n"
             f"Stop Loss attivati 15 min fa: {stop_losses}"
         )
 
@@ -126,21 +156,31 @@ try:
         system_prompt = system_prompt.format(portfolio_data, msg_info)
 
         print("L'agente sta decidendo la sua azione!")
-        out = previsione_trading_agent(system_prompt)
+        llm_out = previsione_trading_agent(system_prompt)
+        out = apply_decision_guard(
+            llm_out,
+            account_status,
+            indicators_json,
+            management_state,
+        )
         out["decision_source"] = "llm"
         out["decision_gate_reason"] = gate_reason
     else:
-        out = deterministic_hold(gate_reason)
+        out = deterministic_hold(
+            gate_reason,
+            management_state=management_state,
+        )
         out["decision_source"] = "deterministic_prefilter"
         out["decision_gate_reason"] = gate_reason
         print(
-            "[decision_gate] LLM non chiamato: account flat e nessun candidato "
-            "azionabile. HOLD deterministico."
+            "[decision_gate] LLM non chiamato: nessun evento azionabile o "
+            "revisione posizione ancora dovuta. HOLD deterministico."
         )
 
-    # Persist the decision BEFORE touching the exchange. This creates a durable
-    # requested-action record and is fail-safe: a DB outage prevents a live order
-    # rather than producing an untracked order.
+    out["position_management"] = management_state
+
+    # Persist the final executable decision BEFORE touching the exchange. Any LLM
+    # decision adjusted by the safety guard retains the original in raw_payload.
     op_id = db_utils.log_bot_operation(
         out,
         system_prompt=system_prompt,
@@ -151,7 +191,8 @@ try:
     )
     print(
         f"[db_utils] Decisione inserita con id={op_id}, "
-        f"source={out.get('decision_source')}"
+        f"source={out.get('decision_source')}, "
+        f"guard_adjusted={out.get('decision_guard_adjusted', False)}"
     )
 
     execution_error = None
@@ -175,7 +216,7 @@ try:
     )
 
     # Always read the account again after the attempted action, including failed
-    # exchange calls, so the audit can compare state before and after.
+    # or locally skipped exchange calls, so the audit can compare state.
     account_status = bot.get_account_status()
     with open("account_status_old.json", "w", encoding="utf-8") as status_file:
         json.dump(account_status["open_positions"], status_file, indent=4)
@@ -187,12 +228,12 @@ try:
         raise execution_error
 
 except Exception as e:
-    # Preserve the existing error path. Locals are collected defensively so an
-    # early failure does not conceal the original exception.
     context = {
         "prompt": locals().get("system_prompt"),
         "tickers": locals().get("tickers"),
         "indicators": locals().get("indicators_json"),
+        "execution_constraints": locals().get("execution_constraints"),
+        "position_management": locals().get("management_state"),
         "news": locals().get("news_txt"),
         "sentiment": locals().get("sentiment_json"),
         "forecasts": locals().get("forecasts_json"),
