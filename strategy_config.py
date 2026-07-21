@@ -1,8 +1,7 @@
 """Configuration for the Deep-Research trend-following strategy.
 
-The project did not previously have a strategy configuration system. This
-single module is deliberately limited to strategy parameters and does not
-alter credentials or exchange signing.
+This module contains strategy and risk parameters only. It does not alter
+credentials, exchange signing, wallet selection or orchestration authority.
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from typing import Dict, Tuple
 @dataclass(frozen=True)
 class StrategyConfig:
     name: str = "donchian_tsmom_vol_target_long_bias"
-    version: str = "1.2.0"
+    version: str = "1.3.0"
     symbols: Tuple[str, ...] = ("BTC", "ETH", "SOL")
     timeframe: str = "1d"
 
@@ -42,10 +41,9 @@ class StrategyConfig:
     minimum_stop_percent: float = 0.50
     maximum_stop_percent: float = 25.0
 
-    # Tactical 15m overlay used only when the daily regime is adverse. It may
-    # authorize a reduced-risk long candidate; it never bypasses hard market-
-    # quality invalidations such as stale data, extreme funding, wide spread or
-    # mark/oracle dislocation.
+    # Tactical 15m overlay used when the daily regime is adverse. Exposure is
+    # quality-sensitive but remains bounded by the stop-based 0.5% account-risk
+    # budget, liquidity/correlation factors and asset caps.
     tactical_min_confirmations: int = 5
     tactical_warning_confirmations: int = 4
     tactical_exit_confirmations: int = 3
@@ -53,7 +51,14 @@ class StrategyConfig:
     tactical_volume_ratio_min: float = 0.80
     tactical_rsi_min: float = 50.0
     tactical_rsi_max: float = 80.0
-    tactical_effective_exposure_cap: float = 0.25
+    tactical_effective_exposure_cap: float = 0.25  # legacy/default observability
+    tactical_weak_effective_exposure_cap: float = 0.15
+    tactical_standard_effective_exposure_cap: float = 0.25
+    tactical_moderate_effective_exposure_cap: float = 0.30
+    tactical_strong_effective_exposure_cap: float = 0.50
+    tactical_symbol_exposure_factors: Dict[str, float] = field(
+        default_factory=lambda: {"BTC": 1.0, "ETH": 1.0, "SOL": 0.80}
+    )
     tactical_stop_atr_multiple: float = 2.0
     tactical_max_stop_percent: float = 5.0
 
@@ -65,11 +70,20 @@ class StrategyConfig:
     stable_position_llm_review_minutes: int = 30
 
     # Hyperliquid rejects perp orders below $10 notional. The execution adapter
-    # also respects each market's size precision and never silently increases a
-    # requested order to the exchange minimum.
+    # also respects market size precision and never silently increases a request.
     minimum_perp_order_notional_usd: float = 10.0
 
-    maximum_exchange_leverage: int = 2
+    # Dynamic leverage separates collateral efficiency from economic exposure.
+    # The normal live selector uses 1x-5x. 10x is an absolute technical ceiling,
+    # never a mandate to increase notional or account risk.
+    maximum_exchange_leverage: int = 10
+    normal_max_exchange_leverage: int = 5
+    tactical_weak_leverage: int = 1
+    tactical_standard_leverage: int = 2
+    tactical_strong_leverage: int = 3
+    daily_neutral_leverage: int = 3
+    daily_favorable_leverage: int = 5
+
     portfolio_gross_cap: float = 1.50
     asset_effective_exposure_caps: Dict[str, float] = field(
         default_factory=lambda: {"BTC": 2.0, "ETH": 2.0, "SOL": 1.5}
