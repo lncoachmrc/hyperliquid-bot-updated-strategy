@@ -201,8 +201,9 @@ def build_position_management_state(
         hard_invalidations = bool(invalidations)
         regime = str(strategy.get("regime") or "unknown")
         recommended_action = str(strategy.get("recommended_action") or "unknown")
-        is_tactical_context = regime == "adverse" or bool(
-            strategy.get("tactical_intraday")
+        is_tactical_context = bool(
+            regime == "adverse"
+            or recommended_action == "tactical_long_candidate"
         )
 
         opened_at = _as_utc(opened_at_by_symbol.get(symbol))
@@ -224,6 +225,9 @@ def build_position_management_state(
         consecutive_weak_cycles = 1 if current_weak else 0
         if current_weak:
             for entry in history:
+                entry_time = _as_utc(entry.get("created_at")) if isinstance(entry, dict) else None
+                if opened_at is not None and entry_time is not None and entry_time < opened_at:
+                    break
                 previous = _history_strategy(entry)
                 previous_confirmations = _confirmation_count(previous)
                 if (
@@ -278,6 +282,7 @@ def build_position_management_state(
             "minimum_hold_met": minimum_hold_met,
             "recommended_action": recommended_action,
             "regime": regime,
+            "position_mode": "tactical" if is_tactical_context else "daily",
             "tactical_candidate": tactical_candidate,
             "tactical_confirmations": confirmations,
             "warning_at_confirmations": cfg.tactical_warning_confirmations,
