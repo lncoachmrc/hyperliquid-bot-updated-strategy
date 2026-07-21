@@ -88,11 +88,26 @@ try:
 
     account_status = bot.get_account_status()
 
+    # Drawdown is calculated before the current snapshot is inserted, so the
+    # historical peak is not distorted by the observation being evaluated.
+    drawdown_state = db_utils.get_account_drawdown_state(
+        current_balance=account_status["balance_usd"]
+    )
+    drawdown_factor_for_execution = drawdown_state.get("drawdown_factor")
+    if drawdown_factor_for_execution is None:
+        # Fail closed for new entries when drawdown cannot be verified. Existing
+        # positions remain manageable through the position policy and LLM.
+        drawdown_factor_for_execution = 0.0
+
     # Evaluate real exchange minimums before deciding whether an LLM call or an
     # OPEN can add value. A sub-minimum recommendation is marked non-executable;
     # it is never silently increased to the minimum size.
     execution_constraints = bot.get_execution_constraints(tickers)
-    annotate_execution_feasibility(indicators_json, execution_constraints)
+    annotate_execution_feasibility(
+        indicators_json,
+        execution_constraints,
+        portfolio_drawdown_factor=drawdown_factor_for_execution,
+    )
     execution_feasibility = compact_execution_feasibility(indicators_json)
     account_status["execution_constraints"] = execution_constraints
 
@@ -100,10 +115,6 @@ try:
 
     pre_snapshot_id = db_utils.log_account_status(account_status)
     print(f"[db_utils] Account snapshot pre-esecuzione id={pre_snapshot_id}")
-
-    drawdown_state = db_utils.get_account_drawdown_state(
-        current_balance=account_status["balance_usd"]
-    )
 
     open_symbols = [
         position.get("symbol")
