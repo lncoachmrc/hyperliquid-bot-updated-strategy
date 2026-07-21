@@ -216,11 +216,33 @@ def apply_dynamic_strategy_overlay(
     )
     result["tactical_risk_profile"] = tactical_profile
 
-    raw_cap = min(
-        max(0.0, _finite_float(result.get("volatility_base_exposure")) or 0.0),
-        max(0.0, _finite_float(result.get("risk_based_exposure_cap")) or 0.0),
-        max(0.0, _finite_float(result.get("asset_effective_exposure_cap")) or 0.0),
+    volatility_cap = max(
+        0.0, _finite_float(result.get("volatility_base_exposure")) or 0.0
     )
+    daily_risk_cap = max(
+        0.0, _finite_float(result.get("risk_based_exposure_cap")) or 0.0
+    )
+    asset_cap = max(
+        0.0, _finite_float(result.get("asset_effective_exposure_cap")) or 0.0
+    )
+    daily_raw_cap = min(volatility_cap, daily_risk_cap, asset_cap)
+
+    tactical_stop_percent = max(
+        0.0, _finite_float(tactical.get("recommended_stop_loss_percent")) or 0.0
+    )
+    tactical_stop_fraction = tactical_stop_percent / 100.0
+    tactical_risk_cap = (
+        cfg.risk_per_trade / tactical_stop_fraction
+        if tactical_stop_fraction > 0
+        else 0.0
+    )
+    tactical_raw_cap = min(volatility_cap, tactical_risk_cap, asset_cap)
+    result["daily_raw_effective_exposure_cap"] = float(daily_raw_cap)
+    result["tactical_stop_based_effective_exposure_cap"] = float(
+        tactical_risk_cap
+    )
+    result["tactical_raw_effective_exposure_cap"] = float(tactical_raw_cap)
+
     liquidity = max(0.0, _finite_float(result.get("liquidity_factor")) or 0.0)
     correlation = max(0.0, _finite_float(result.get("correlation_factor")) or 0.0)
 
@@ -233,7 +255,7 @@ def apply_dynamic_strategy_overlay(
     elif regime == "adverse":
         if tactical.get("candidate"):
             final_exposure = min(
-                raw_cap
+                tactical_raw_cap
                 * float(tactical_profile["risk_multiplier"])
                 * liquidity
                 * correlation,
@@ -241,11 +263,11 @@ def apply_dynamic_strategy_overlay(
             )
             if final_exposure > 0:
                 action = "tactical_long_candidate"
-                stop_percent = tactical.get("recommended_stop_loss_percent")
+                stop_percent = tactical_stop_percent
         else:
             action = "close_if_open_otherwise_hold"
     elif trend_long:
-        final_exposure = raw_cap * regime_multiplier * liquidity * correlation
+        final_exposure = daily_raw_cap * regime_multiplier * liquidity * correlation
         action = "long_candidate" if final_exposure > 0 else "hold_or_flat"
     elif trend_exit:
         action = "close_if_open_otherwise_hold"
