@@ -89,6 +89,23 @@ def test_hold_is_explicit_no_action():
     assert result["order_id"] is None
 
 
+def test_locally_skipped_subminimum_open_is_no_action_not_failure():
+    result = normalize_execution_result(
+        _decision(operation="open", symbol="BTC"),
+        {
+            "status": "skipped",
+            "reason": "requested_order_below_minimum_executable_size",
+            "requested_notional_usd": 33.9,
+            "minimum_executable_notional_usd": 65.5,
+        },
+    )
+
+    assert result["execution_status"] == "no_action"
+    assert result["exchange_status"] == "skipped"
+    assert "below_minimum" in result["error_message"]
+    assert result["order_id"] is None
+
+
 def test_exchange_exception_is_failed():
     result = normalize_execution_exception(
         _decision(operation="close", symbol="ETH"),
