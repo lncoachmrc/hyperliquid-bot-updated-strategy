@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - position-hysteresis-sizing-guard
+      - dynamic-leverage-risk-budget
   pull_request:
     branches:
       - main
@@ -45,6 +46,7 @@ jobs:
           pytest -q \
             tests/test_strategy_core.py \
             tests/test_strategy_dynamic.py \
+            tests/test_leverage_policy.py \
             tests/test_decision_gate.py \
             tests/test_decision_guard.py \
             tests/test_execution_audit.py \
