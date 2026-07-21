@@ -43,8 +43,9 @@ def trade_operation_schema() -> dict:
             "target_portion_of_balance": {
                 "type": "number",
                 "description": (
-                    "Fraction of available account balance for open, or position "
-                    "fraction for close. It must not exceed the strategy snapshot."
+                    "Collateral fraction of available balance. Effective exposure "
+                    "equals this fraction multiplied by leverage and must not exceed "
+                    "the execution_feasibility limit."
                 ),
                 "minimum": 0,
                 "maximum": 1,
@@ -52,17 +53,18 @@ def trade_operation_schema() -> dict:
             "leverage": {
                 "type": "integer",
                 "description": (
-                    "Integer exchange leverage. Effective fractional leverage is "
-                    "represented jointly by leverage and target balance portion."
+                    "Integer exchange leverage. Use the final dynamic leverage tier; "
+                    "higher leverage must reduce collateral portion proportionally "
+                    "and must never increase approved effective exposure."
                 ),
                 "minimum": 1,
-                "maximum": 2,
+                "maximum": 10,
             },
             "stop_loss_percent": {
                 "type": "number",
                 "description": (
-                    "Stop distance percentage. Use the ATR-derived value supplied "
-                    "by the strategy snapshot; it is not a profit guarantee."
+                    "Stop distance percentage. Use no wider stop than the ATR-derived "
+                    "value supplied by the strategy snapshot."
                 ),
                 "minimum": 0.5,
                 "maximum": 25,
