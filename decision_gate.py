@@ -78,10 +78,25 @@ def should_invoke_llm(
         return False, "stable_open_position_review_not_due"
 
     candidates = _actionable_symbols(indicators)
-    if candidates:
-        return True, "actionable_candidates:" + ",".join(candidates)
+    if not candidates:
+        return False, "flat_account_and_no_executable_candidate"
 
-    return False, "flat_account_and_no_executable_candidate"
+    # A persistent flat-account candidate does not justify an LLM call every ten
+    # minutes. Call immediately on the transition to a new executable candidate,
+    # then review it on the same 30-minute cadence used for stable positions.
+    if isinstance(management_state, dict) and "llm_review_due" in management_state:
+        new_candidates = {
+            str(item).upper()
+            for item in (management_state.get("new_candidate_symbols") or [])
+        }
+        transitioned = [symbol for symbol in candidates if symbol in new_candidates]
+        if transitioned:
+            return True, "new_actionable_candidates:" + ",".join(transitioned)
+        if management_state.get("llm_review_due") is True:
+            return True, "persistent_candidate_scheduled_review"
+        return False, "persistent_candidate_review_not_due"
+
+    return True, "actionable_candidates:" + ",".join(candidates)
 
 
 def deterministic_hold(
