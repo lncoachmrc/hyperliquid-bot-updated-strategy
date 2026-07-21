@@ -52,10 +52,11 @@ def _indicators(*, executable=True, final_exposure=0.5, leverage=3):
     ]
 
 
-def _management(*, eligible=None):
+def _management(*, eligible=None, blocked=None):
     return {
         "preferred_hold_symbol": "ETH",
         "eligible_close_symbols": list(eligible or []),
+        "reentry_blocked_symbols": list(blocked or []),
     }
 
 
@@ -130,6 +131,31 @@ def test_non_executable_open_is_blocked():
     )
     assert guarded["operation"] == "hold"
     assert guarded["decision_guard_adjusted"] is True
+
+
+def test_recently_closed_symbol_open_is_blocked_even_if_llm_requests_it():
+    decision = {
+        "operation": "open",
+        "symbol": "BTC",
+        "direction": "long",
+        "target_portion_of_balance": 0.1,
+        "leverage": 3,
+        "stop_loss_percent": 1.0,
+        "reason": "reenter immediately",
+    }
+    guarded = apply_decision_guard(
+        decision,
+        {"balance_usd": 3000.0, "open_positions": []},
+        _indicators(final_exposure=0.3, leverage=3),
+        {
+            "preferred_hold_symbol": "BTC",
+            "eligible_close_symbols": [],
+            "reentry_blocked_symbols": ["BTC"],
+        },
+    )
+    assert guarded["operation"] == "hold"
+    assert guarded["symbol"] == "BTC"
+    assert "re-entry cooldown" in guarded["decision_guard_reason"]
 
 
 def test_open_is_represented_with_policy_leverage_without_changing_exposure():
