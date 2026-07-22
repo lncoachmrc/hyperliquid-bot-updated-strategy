@@ -8,6 +8,7 @@ on:
       - exit-reentry-profit-protection
       - candidate-upgrade-cycle-lock
       - adverse-selection-prophet-shadow
+      - news-sentiment-shadow
   pull_request:
     branches:
       - main
@@ -39,7 +40,8 @@ jobs:
             python-dotenv \
             psycopg2-binary \
             hyperliquid-python-sdk \
-            eth-account
+            eth-account \
+            requests
 
       - name: Compile Python sources
         run: python -m compileall -q .
@@ -64,4 +66,5 @@ jobs:
             tests/test_profit_protection_overlay.py \
             tests/test_prophet_shadow.py \
             tests/test_forecaster_horizons.py \
-            tests/test_shadow_candidate_selection.py
+            tests/test_shadow_candidate_selection.py \
+            tests/test_news_sentiment_shadow.py
