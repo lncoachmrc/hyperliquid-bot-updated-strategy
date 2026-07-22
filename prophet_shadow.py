@@ -46,6 +46,13 @@ def _as_bool(value: Any) -> bool:
     return False
 
 
+def _pick(item: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in item and item.get(key) is not None:
+            return item.get(key)
+    return None
+
+
 def _normalise_forecasts(raw: Any) -> list[Dict[str, Any]]:
     if raw is None:
         return []
@@ -89,26 +96,22 @@ def _forecast_view(item: Mapping[str, Any] | None) -> Dict[str, Any] | None:
         return None
     return {
         "horizon_minutes": _horizon_minutes(item),
-        "last_price": _as_float(item.get("Ultimo Prezzo") or item.get("last_price")),
-        "prediction": _as_float(item.get("Previsione") or item.get("prediction")),
-        "lower_bound": _as_float(
-            item.get("Limite Inferiore") or item.get("lower_bound")
-        ),
-        "upper_bound": _as_float(
-            item.get("Limite Superiore") or item.get("upper_bound")
-        ),
-        "change_pct": _as_float(item.get("Variazione %") or item.get("change_pct")),
+        "last_price": _as_float(_pick(item, "Ultimo Prezzo", "last_price")),
+        "prediction": _as_float(_pick(item, "Previsione", "prediction")),
+        "lower_bound": _as_float(_pick(item, "Limite Inferiore", "lower_bound")),
+        "upper_bound": _as_float(_pick(item, "Limite Superiore", "upper_bound")),
+        "change_pct": _as_float(_pick(item, "Variazione %", "change_pct")),
         "forecast_generated_at_ms": _as_int(
-            item.get("Forecast Generated At") or item.get("forecast_generated_at")
+            _pick(item, "Forecast Generated At", "forecast_generated_at")
         ),
         "target_timestamp_ms": _as_int(
-            item.get("Timestamp Previsione") or item.get("forecast_timestamp")
+            _pick(item, "Timestamp Previsione", "forecast_timestamp")
         ),
         "minutes_to_target": _as_float(
-            item.get("Minutes To Target") or item.get("minutes_to_target")
+            _pick(item, "Minutes To Target", "minutes_to_target")
         ),
         "source_price_timestamp_ms": _as_int(
-            item.get("Source Price Timestamp") or item.get("source_price_timestamp")
+            _pick(item, "Source Price Timestamp", "source_price_timestamp")
         ),
         "error": item.get("error"),
     }
@@ -224,7 +227,15 @@ def attach_prophet_shadow_evaluations(
             "operational": False,
             "policy_version": cfg.prophet_shadow_policy_version,
             "sample_key": sample_key,
-            "sample_eligible": bool(bar_close and forecast_15m and forecast_1h),
+            "sample_eligible": bool(
+                bar_close
+                and forecast_15m
+                and forecast_1h
+                and forecast_15m.get("change_pct") is not None
+                and forecast_1h.get("change_pct") is not None
+                and forecast_15m.get("target_timestamp_ms") is not None
+                and forecast_1h.get("target_timestamp_ms") is not None
+            ),
             "evaluated_at": evaluation_time.isoformat(),
             "ticker": symbol,
             "strategy_version": strategy.get("strategy_version") or cfg.version,
