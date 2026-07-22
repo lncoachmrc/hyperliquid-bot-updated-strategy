@@ -9,12 +9,10 @@ from runtime_config import env_bool
 from candidate_upgrade import annotate_candidate_quality_upgrades
 from decision_gate import deterministic_hold, should_invoke_llm
 from decision_guard import apply_decision_guard
-from entry_quality_policy import (
-    apply_strict_adverse_entry_policy,
-    executable_candidate_symbols,
-)
+from entry_quality_policy import apply_strict_adverse_entry_policy
 from profit_protection_overlay import apply_adverse_profit_protection
 from prophet_shadow import attach_prophet_shadow_evaluations
+from shadow_candidate_selection import flat_account_shadow_candidates
 from execution_policy import (
     annotate_execution_feasibility,
     compact_execution_feasibility,
@@ -128,10 +126,17 @@ try:
     account_status["execution_constraints"] = execution_constraints
     account_status["entry_quality_policy"] = entry_quality_summary
 
-    # Prophet is collected only for executable entry opportunities and remains
-    # fully shadow-only. Its values are persisted with the strategy snapshot but
-    # are not included in the LLM prompt and cannot change operation/risk/leverage.
-    candidate_symbols = executable_candidate_symbols(indicators_json)
+    # Stop management must never wait for optional Prophet model fitting. Check
+    # stops before any shadow-only forecasting work is attempted.
+    stop_losses = check_stop_loss(account_status)
+
+    # Prophet is collected only when the account is completely flat and at least
+    # one post-filter entry candidate is executable. Its values are persisted but
+    # excluded from the LLM prompt and cannot change operation/risk/leverage.
+    candidate_symbols = flat_account_shadow_candidates(
+        indicators_json,
+        account_status,
+    )
     forecasts_txt = ""
     forecasts_json = None
     prophet_shadow_summary = {
@@ -151,11 +156,10 @@ try:
         )
     account_status["prophet_shadow_mode"] = {
         "operational": False,
+        "flat_account_required": True,
         "candidate_symbols": candidate_symbols,
         "observation_count": prophet_shadow_summary.get("observation_count", 0),
     }
-
-    stop_losses = check_stop_loss(account_status)
 
     pre_snapshot_id = db_utils.log_account_status(account_status)
     print(f"[db_utils] Account snapshot pre-esecuzione id={pre_snapshot_id}")
