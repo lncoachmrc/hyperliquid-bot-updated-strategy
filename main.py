@@ -14,6 +14,12 @@ from profit_protection_overlay import apply_adverse_profit_protection
 from prophet_shadow import attach_prophet_shadow_evaluations
 from dashboard_forecast_cache import resolve_dashboard_forecasts
 from shadow_candidate_selection import flat_account_shadow_candidates
+from performance_observability import (
+    ensure_performance_observability_schema,
+    link_entry_opportunity_samples,
+    reconcile_pending_external_closures,
+    record_and_observe_entry_opportunities,
+)
 from execution_policy import (
     annotate_execution_feasibility,
     compact_execution_feasibility,
@@ -86,6 +92,30 @@ try:
     # the cycle fails before any live order can be sent.
     ensure_execution_audit_schema()
 
+    # Performance observability is deliberately non-operational. A schema or
+    # reconciliation failure must never block position management or a live order.
+    performance_observability_schema_ready = False
+    performance_observability_summary = {
+        "mode": "audit_only",
+        "operational": False,
+        "schema_ready": False,
+        "entry_opportunities": {},
+        "external_closes": {},
+    }
+    try:
+        ensure_performance_observability_schema()
+        performance_observability_schema_ready = True
+        performance_observability_summary["schema_ready"] = True
+    except Exception as observability_schema_error:  # noqa: BLE001
+        performance_observability_summary["schema_error"] = str(
+            observability_schema_error
+        )
+        print(
+            "[performance_observability] Schema non disponibile; "
+            "il trading continua senza metriche aggiuntive: "
+            f"{observability_schema_error}"
+        )
+
     tickers = ["BTC", "ETH", "SOL"]
     indicators_txt, indicators_json = analyze_multiple_tickers(
         tickers,
@@ -127,9 +157,35 @@ try:
     account_status["execution_constraints"] = execution_constraints
     account_status["entry_quality_policy"] = entry_quality_summary
 
-    # Stop management must never wait for optional Prophet model fitting. Check
-    # stops before any shadow-only forecasting work is attempted.
+    # Stop management must never wait for optional forecasting or audit work.
     stop_losses = check_stop_loss(account_status)
+
+    # Record one counterfactual sample per symbol/completed 15m bar and reconcile
+    # externally triggered closes. These results are intentionally NOT added to
+    # account_status or the LLM prompt.
+    if performance_observability_schema_ready:
+        try:
+            performance_observability_summary["entry_opportunities"] = (
+                record_and_observe_entry_opportunities(
+                    indicators_json,
+                    entry_quality_summary,
+                )
+            )
+        except Exception as entry_observation_error:  # noqa: BLE001
+            performance_observability_summary["entry_opportunities"] = {
+                "error": str(entry_observation_error)
+            }
+            print(
+                "[performance_observability] Errore entry samples; "
+                f"trading invariato: {entry_observation_error}"
+            )
+
+        performance_observability_summary["external_closes"] = (
+            reconcile_pending_external_closures(
+                bot,
+                stop_losses,
+            )
+        )
 
     # Prophet is collected only when the account is completely flat and at least
     # one post-filter entry candidate is executable. Its values are persisted but
@@ -263,6 +319,7 @@ try:
         "source": dashboard_forecast_source,
         "count": len(dashboard_forecasts_json),
     }
+    out["performance_observability"] = performance_observability_summary
 
     # Persist the final executable decision BEFORE touching the exchange. Any LLM
     # decision adjusted by the safety guard retains the original in raw_payload.
@@ -274,11 +331,32 @@ try:
         sentiment=sentiment_json,
         forecasts=dashboard_forecasts_json,
     )
+
+    entry_observation_state = performance_observability_summary.get(
+        "entry_opportunities"
+    ) or {}
+    sample_keys = entry_observation_state.get("sample_keys") or []
+    if performance_observability_schema_ready and sample_keys:
+        try:
+            linked_samples = link_entry_opportunity_samples(
+                sample_keys,
+                bot_operation_id=op_id,
+                decision=out,
+            )
+            entry_observation_state["linked_samples"] = linked_samples
+        except Exception as sample_link_error:  # noqa: BLE001
+            entry_observation_state["link_error"] = str(sample_link_error)
+            print(
+                "[performance_observability] Impossibile collegare i sample "
+                f"all'operazione {op_id}: {sample_link_error}"
+            )
+
     print(
         f"[db_utils] Decisione inserita con id={op_id}, "
         f"source={out.get('decision_source')}, "
         f"guard_adjusted={out.get('decision_guard_adjusted', False)}, "
         f"prophet_shadow_samples={prophet_shadow_summary.get('observation_count', 0)}, "
+        f"entry_observation_samples={entry_observation_state.get('candidate_samples', 0)}, "
         f"dashboard_forecasts={len(dashboard_forecasts_json)} "
         f"({dashboard_forecast_source})"
     )
@@ -324,6 +402,9 @@ except Exception as e:
         "entry_quality_policy": locals().get("entry_quality_summary"),
         "position_management": locals().get("management_state"),
         "prophet_shadow": locals().get("prophet_shadow_summary"),
+        "performance_observability": locals().get(
+            "performance_observability_summary"
+        ),
         "dashboard_forecasts": locals().get("dashboard_forecasts_json"),
         "dashboard_forecast_source": locals().get("dashboard_forecast_source"),
         "news": locals().get("news_txt"),
