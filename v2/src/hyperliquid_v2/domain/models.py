@@ -165,15 +165,9 @@ class ModelDecision:
         if self.action is DecisionAction.TAKE_PARTIAL:
             if self.partial_fraction is None or not 0 < self.partial_fraction < 1:
                 raise ValueError("TAKE_PARTIAL requires partial_fraction between 0 and 1")
-        if self.action is DecisionAction.OPEN:
-            if self.selected_leverage is None or self.selected_leverage < 1:
-                raise ValueError("OPEN requires selected_leverage")
-            if self.selected_effective_exposure is None or self.selected_effective_exposure <= 0:
-                raise ValueError("OPEN requires selected_effective_exposure")
-            if self.selected_balance_portion is None or self.selected_balance_portion <= 0:
-                raise ValueError("OPEN requires selected_balance_portion")
-            if self.selected_stop_distance_pct is None or self.selected_stop_distance_pct <= 0:
-                raise ValueError("OPEN requires selected_stop_distance_pct")
+        # OPEN sizing is validated by the deterministic router against the packet's
+        # RiskEnvelope. Keeping construction permissive lets malformed provider
+        # output be persisted and safely downgraded instead of crashing the cycle.
 
 
 def utc_now() -> datetime:
