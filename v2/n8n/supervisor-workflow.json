@@ -1,0 +1,59 @@
+{
+  "name": "Hyperliquid V2 Daily Supervisor",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {"rule": {"interval": [{"field": "hours", "hoursInterval": 24}]}},
+      "id": "schedule",
+      "name": "Every 24 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.V2_SUPERVISOR_URL + '/supervisor/run' }}",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "X-Supervisor-Token", "value": "={{ $env.V2_SUPERVISOR_TOKEN }}"}]},
+        "options": {"timeout": 180000}
+      },
+      "id": "audit",
+      "name": "Run V2 Supervisor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 0]
+    },
+    {
+      "parameters": {"conditions": {"string": [{"value1": "={{ $json.status }}", "operation": "equal", "value2": "draft_pr_created"}]}},
+      "id": "pr-check",
+      "name": "Draft PR created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [520, 0]
+    },
+    {
+      "parameters": {"content": "={{ 'V2 Supervisor created a draft PR: ' + ($json.github.url || 'URL unavailable') }}"},
+      "id": "notify",
+      "name": "Notification payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [780, -80]
+    },
+    {
+      "parameters": {"content": "={{ 'V2 Supervisor result: ' + $json.status + '. No live merge or deploy was authorized.' }}"},
+      "id": "no-change",
+      "name": "No-change payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [780, 100]
+    }
+  ],
+  "connections": {
+    "Every 24 hours": {"main": [[{"node": "Run V2 Supervisor", "type": "main", "index": 0}]]},
+    "Run V2 Supervisor": {"main": [[{"node": "Draft PR created?", "type": "main", "index": 0}]]},
+    "Draft PR created?": {"main": [[{"node": "Notification payload", "type": "main", "index": 0}], [{"node": "No-change payload", "type": "main", "index": 0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "meta": {"shadowOnly": true, "mergeAuthorized": false, "deployAuthorized": false}
+}

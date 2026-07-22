@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "live_trading_enabled": false,
+  "authorized_symbols": ["BTC", "ETH", "SOL"],
+  "authorized_directions": ["long"],
+  "execution_service_isolation_required": true,
+  "private_key_allowed_services": ["execution-service"],
+  "maximum_risk_per_trade_fraction": 0.005,
+  "maximum_portfolio_gross_exposure": 1.5,
+  "maximum_correlated_positions": 1,
+  "maximum_exchange_leverage": 10,
+  "supervisor_can_merge": false,
+  "supervisor_can_deploy_production": false,
+  "supervisor_can_change_secrets": false,
+  "supervisor_can_change_invariants": false,
+  "human_approval_required_for_live_change": true
+}

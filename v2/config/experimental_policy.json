@@ -1,0 +1,13 @@
+{
+  "guardian": {
+    "min_mfe_for_dynamic_floor_r": 0.5,
+    "exhaustion_reversal_margin": 0.0,
+    "minimum_profit_retention": 0.25
+  },
+  "opportunity": {
+    "max_distance_ema_atr": 1.2,
+    "min_reward_risk": 1.5,
+    "min_volume_ratio": 0.9
+  },
+  "supervisor_history": []
+}

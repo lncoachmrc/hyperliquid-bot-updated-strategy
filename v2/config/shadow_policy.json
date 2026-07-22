@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "mode": "shadow",
+  "send_orders": false,
+  "minimum_quant_samples": 50,
+  "minimum_out_of_sample_samples": 20,
+  "guardian_market_update_seconds": 5,
+  "guardian_state_evaluation_seconds": 30,
+  "llm_trigger_mode": "event_driven",
+  "llm_periodic_position_review_minutes": 30,
+  "supervisor_analysis_hours": 24,
+  "supervisor_patch_review_hours": 48,
+  "maximum_changes_per_supervisor_pr": 1,
+  "human_approval_required": true
+}
