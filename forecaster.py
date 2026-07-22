@@ -67,6 +67,31 @@ class HyperliquidForecaster:
             .reset_index(drop=True)
         )
 
+    def _current_mid(self, coin: str, fallback: float) -> tuple[float, str]:
+        """Use the live Hyperliquid mid as the forecast-return baseline.
+
+        The completed candle remains a safe fallback if the live-mid endpoint is
+        temporarily unavailable. A per-batch cache prevents duplicate calls for
+        the 15m and 1h models of the same coin.
+        """
+        cached = self.last_prices.get(coin)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            return float(cached[0]), str(cached[1])
+
+        try:
+            mids = self.info.all_mids()
+            live_mid = float((mids or {}).get(coin))
+            if live_mid > 0:
+                result = (live_mid, "live_mid")
+                self.last_prices[coin] = result
+                return result
+        except Exception:  # noqa: BLE001
+            pass
+
+        result = (float(fallback), "last_completed_candle_close")
+        self.last_prices[coin] = result
+        return result
+
     def forecast(
         self,
         coin: str,
@@ -81,8 +106,8 @@ class HyperliquidForecaster:
         horizon_minutes = 15 if interval == "15m" else 60
         limit = 300 if interval == "15m" else 500
         frame = self._fetch_candles(coin, interval, limit=limit)
-        last_price = float(frame["y"].iloc[-1])
-        source_price_timestamp_ms = int(frame["close_time_ms"].iloc[-1])
+        completed_close_price = float(frame["y"].iloc[-1])
+        completed_close_timestamp_ms = int(frame["close_time_ms"].iloc[-1])
 
         generated = generated_at or datetime.now(timezone.utc)
         if generated.tzinfo is None:
@@ -90,6 +115,16 @@ class HyperliquidForecaster:
         generated = generated.astimezone(timezone.utc)
         target = normalized_target_time(generated, horizon_minutes)
         target_naive = pd.Timestamp(target).tz_convert(None)
+
+        current_price, source_price_kind = self._current_mid(
+            coin,
+            completed_close_price,
+        )
+        source_price_timestamp_ms = (
+            _epoch_ms(generated)
+            if source_price_kind == "live_mid"
+            else completed_close_timestamp_ms
+        )
 
         model = Prophet(daily_seasonality=True, weekly_seasonality=True)
         model.fit(frame[["ds", "y"]])
@@ -99,10 +134,13 @@ class HyperliquidForecaster:
             "target_at": target,
             "horizon_minutes": horizon_minutes,
             "source_price_timestamp_ms": source_price_timestamp_ms,
+            "source_price_kind": source_price_kind,
+            "completed_candle_close_price": completed_close_price,
+            "completed_candle_close_timestamp_ms": completed_close_timestamp_ms,
         }
         return (
             forecast.tail(1)[["ds", "yhat", "yhat_lower", "yhat_upper"]],
-            last_price,
+            current_price,
             metadata,
         )
 
@@ -117,6 +155,9 @@ class HyperliquidForecaster:
         if generated.tzinfo is None:
             generated = generated.replace(tzinfo=timezone.utc)
         generated = generated.astimezone(timezone.utc)
+        # Refresh live mids once per forecast batch, while sharing the same mid
+        # between the 15m and 1h horizon for each coin.
+        self.last_prices = {}
 
         results = []
         for coin in tickers:
@@ -156,6 +197,13 @@ class HyperliquidForecaster:
                             "Source Price Timestamp": metadata[
                                 "source_price_timestamp_ms"
                             ],
+                            "Source Price Kind": metadata["source_price_kind"],
+                            "Completed Candle Close Price": metadata[
+                                "completed_candle_close_price"
+                            ],
+                            "Completed Candle Close Timestamp": metadata[
+                                "completed_candle_close_timestamp_ms"
+                            ],
                             "Target Normalized": True,
                         }
                     )
@@ -174,6 +222,9 @@ class HyperliquidForecaster:
                             "Timestamp Previsione": _epoch_ms(target),
                             "Minutes To Target": horizon_minutes,
                             "Source Price Timestamp": None,
+                            "Source Price Kind": None,
+                            "Completed Candle Close Price": None,
+                            "Completed Candle Close Timestamp": None,
                             "Target Normalized": True,
                             "error": str(exc),
                         }
