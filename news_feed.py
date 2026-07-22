@@ -141,3 +141,10 @@ def format_news_items(items: Iterable[Dict[str, Any]], max_chars: int = 4000) ->
 
 def fetch_latest_news(max_chars: int = 4000) -> str:
     return format_news_items(fetch_news_items(), max_chars=max_chars)
+
+
+# Install the non-blocking shadow collector after all public feed functions exist.
+# The hook wraps only persistence and has zero authority over live decisions.
+from shadow_runtime_hook import install_shadow_runtime_hook  # noqa: E402
+
+install_shadow_runtime_hook()
