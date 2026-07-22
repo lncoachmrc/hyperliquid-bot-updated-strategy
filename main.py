@@ -12,6 +12,7 @@ from decision_guard import apply_decision_guard
 from entry_quality_policy import apply_strict_adverse_entry_policy
 from profit_protection_overlay import apply_adverse_profit_protection
 from prophet_shadow import attach_prophet_shadow_evaluations
+from dashboard_forecast_cache import resolve_dashboard_forecasts
 from shadow_candidate_selection import flat_account_shadow_candidates
 from execution_policy import (
     annotate_execution_feasibility,
@@ -161,6 +162,19 @@ try:
         "observation_count": prophet_shadow_summary.get("observation_count", 0),
     }
 
+    # The live decision still uses only the current shadow sample above. For the
+    # read-only dashboard, fill any missing cards with the latest stored 15m/1h
+    # forecasts so a non-Prophet cycle cannot blank the entire forecast section.
+    dashboard_forecasts_json, dashboard_forecast_source = (
+        resolve_dashboard_forecasts(forecasts_json)
+    )
+    account_status["prophet_shadow_mode"]["dashboard_forecast_source"] = (
+        dashboard_forecast_source
+    )
+    account_status["prophet_shadow_mode"]["dashboard_forecast_count"] = len(
+        dashboard_forecasts_json
+    )
+
     pre_snapshot_id = db_utils.log_account_status(account_status)
     print(f"[db_utils] Account snapshot pre-esecuzione id={pre_snapshot_id}")
 
@@ -245,6 +259,10 @@ try:
     out["position_management"] = management_state
     out["entry_quality_policy"] = entry_quality_summary
     out["prophet_shadow"] = prophet_shadow_summary
+    out["dashboard_forecasts"] = {
+        "source": dashboard_forecast_source,
+        "count": len(dashboard_forecasts_json),
+    }
 
     # Persist the final executable decision BEFORE touching the exchange. Any LLM
     # decision adjusted by the safety guard retains the original in raw_payload.
@@ -254,13 +272,15 @@ try:
         indicators=indicators_json,
         news_text=news_txt,
         sentiment=sentiment_json,
-        forecasts=forecasts_json,
+        forecasts=dashboard_forecasts_json,
     )
     print(
         f"[db_utils] Decisione inserita con id={op_id}, "
         f"source={out.get('decision_source')}, "
         f"guard_adjusted={out.get('decision_guard_adjusted', False)}, "
-        f"prophet_shadow_samples={prophet_shadow_summary.get('observation_count', 0)}"
+        f"prophet_shadow_samples={prophet_shadow_summary.get('observation_count', 0)}, "
+        f"dashboard_forecasts={len(dashboard_forecasts_json)} "
+        f"({dashboard_forecast_source})"
     )
 
     execution_error = None
@@ -304,6 +324,8 @@ except Exception as e:
         "entry_quality_policy": locals().get("entry_quality_summary"),
         "position_management": locals().get("management_state"),
         "prophet_shadow": locals().get("prophet_shadow_summary"),
+        "dashboard_forecasts": locals().get("dashboard_forecasts_json"),
+        "dashboard_forecast_source": locals().get("dashboard_forecast_source"),
         "news": locals().get("news_txt"),
         "sentiment": locals().get("sentiment_json"),
         "forecasts": locals().get("forecasts_json"),
