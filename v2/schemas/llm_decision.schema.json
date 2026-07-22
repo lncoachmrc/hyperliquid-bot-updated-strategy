@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LLMDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "confidence",
+    "thesis_status",
+    "main_reason",
+    "evidence_used"
+  ],
+  "properties": {
+    "action": {"enum": ["OPEN", "HOLD", "CLOSE", "TAKE_PARTIAL", "NO_TRADE"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "expected_value_hold_r": {"type": ["number", "null"]},
+    "expected_value_close_r": {"type": ["number", "null"]},
+    "thesis_status": {"type": "string"},
+    "main_reason": {"type": "string"},
+    "evidence_used": {"type": "array", "items": {"type": "string"}},
+    "partial_fraction": {"type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1}
+  }
+}
