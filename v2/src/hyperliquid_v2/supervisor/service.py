@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -34,11 +36,7 @@ class SupervisorService:
     async def run(self) -> dict[str, Any]:
         run_id = str(uuid4())
         metrics = await self._verified_metrics()
-        await self.repository.save_supervisor_run(
-            run_id,
-            "analyzing",
-            metrics,
-        )
+        await self.repository.save_supervisor_run(run_id, "analyzing", metrics)
         try:
             proposal, model_output = await self.model.propose(metrics)
             if proposal is None:
@@ -183,4 +181,16 @@ class SupervisorService:
             "deploy_authorized": False,
             "live_trading_authorized": False,
         }
-        return metrics
+        return _primitive(metrics)
+
+
+def _primitive(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _primitive(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_primitive(item) for item in value]
+    return value
