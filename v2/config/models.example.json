@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "selection_policy": "benchmark_by_task_not_brand",
+  "providers": [
+    {
+      "provider": "openai",
+      "api_key_env": "OPENAI_API_KEY",
+      "model_env": "OPENAI_DECISION_MODEL",
+      "fallback_model": "gpt-5.1",
+      "base_url": "https://api.openai.com/v1",
+      "task_roles": ["entry_primary", "position_primary", "supervisor_critic"],
+      "enabled": true
+    },
+    {
+      "provider": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "model_env": "ANTHROPIC_DECISION_MODEL",
+      "fallback_model": "",
+      "base_url": "https://api.anthropic.com/v1",
+      "task_roles": ["entry_challenger", "position_challenger", "supervisor_primary"],
+      "enabled": true
+    },
+    {
+      "provider": "deepseek",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model_env": "DEEPSEEK_DECISION_MODEL",
+      "fallback_model": "deepseek-v4-pro",
+      "base_url": "https://api.deepseek.com",
+      "task_roles": ["independent_critic", "batch_audit"],
+      "enabled": true
+    }
+  ],
+  "rules": {
+    "discover_available_models_at_startup": true,
+    "benchmark_before_promotion": true,
+    "challenger_only_on_ambiguity_or_high_impact": true,
+    "disagreement_on_open_resolves_to_hold": true,
+    "provider_outage_resolves_to_safe_fallback": true
+  }
+}
