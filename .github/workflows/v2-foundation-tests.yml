@@ -1,7 +1,16 @@
 name: V2 Operational Tests
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - v2-clean-architecture-foundation
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-foundation-tests.yml"
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-foundation-tests.yml"
 
 permissions:
   contents: read
@@ -9,5 +18,20 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - run: echo "V2 operational update in progress; final workflow will restore CI triggers."
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install V2 operational service
+        run: python -m pip install -e 'v2[dev]'
+      - name: Compile
+        run: python -m compileall -q v2/src v2/tests
+      - name: Test operational contracts
+        run: pytest v2/tests
+      - name: Verify shadow invariants
+        run: |
+          ! grep -R "PRIVATE_KEY" v2/src
+          ! grep -R "market_open\|market_close\|exchange\.order" v2/src
