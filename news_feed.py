@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import timezone
@@ -12,6 +13,11 @@ import requests
 logger = logging.getLogger(__name__)
 NEWS_FEED_URL = "https://coinjournal.net/news/feed/"
 _TRACKING_QUERY_PREFIXES = ("utm_", "mc_", "ref")
+
+
+def _shadow_only_live_inputs() -> bool:
+    raw = os.getenv("NEWS_SENTIMENT_SHADOW_ONLY", "true")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _strip_html_tags(text: str) -> str:
@@ -50,11 +56,7 @@ def canonicalize_url(url: str) -> str:
 
 
 def fetch_news_items(max_items: int = 25) -> List[Dict[str, Any]]:
-    """Fetch structured CoinJournal items.
-
-    This function is used by the shadow collector. The existing text interface
-    remains available through ``fetch_latest_news`` for the live LLM prompt.
-    """
+    """Fetch structured CoinJournal items for the shadow collector."""
 
     try:
         response = requests.get(NEWS_FEED_URL, timeout=10)
@@ -140,6 +142,11 @@ def format_news_items(items: Iterable[Dict[str, Any]], max_chars: int = 4000) ->
 
 
 def fetch_latest_news(max_chars: int = 4000) -> str:
+    if _shadow_only_live_inputs():
+        return (
+            "NEWS SHADOW ONLY: i contenuti informativi sono esclusi dalla "
+            "decisione live durante il campione; non inferire direzione dalle news."
+        )
     return format_news_items(fetch_news_items(), max_chars=max_chars)
 
 

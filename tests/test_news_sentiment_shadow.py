@@ -1,3 +1,5 @@
+import news_feed
+import sentiment
 from news_feed import canonicalize_url
 from news_sentiment_shadow import (
     classify_news_item,
@@ -69,3 +71,27 @@ def test_fear_and_greed_contrarian_hypothesis_is_shadow_only_mapping():
     assert sentiment_direction(50) == 0.0
     assert sentiment_direction(65) == -0.5
     assert sentiment_direction(80) == -1.0
+
+
+def test_news_are_not_fetched_for_live_prompt_in_shadow_only_mode(monkeypatch):
+    monkeypatch.setenv("NEWS_SENTIMENT_SHADOW_ONLY", "true")
+
+    def unexpected_fetch(*args, **kwargs):
+        raise AssertionError("live prompt must not fetch raw news in shadow-only mode")
+
+    monkeypatch.setattr(news_feed, "fetch_news_items", unexpected_fetch)
+    text = news_feed.fetch_latest_news()
+    assert "NEWS SHADOW ONLY" in text
+    assert "non inferire direzione" in text
+
+
+def test_sentiment_is_not_fetched_for_live_prompt_in_shadow_only_mode(monkeypatch):
+    monkeypatch.setenv("NEWS_SENTIMENT_SHADOW_ONLY", "true")
+
+    def unexpected_fetch():
+        raise AssertionError("live prompt must not fetch raw sentiment in shadow-only mode")
+
+    monkeypatch.setattr(sentiment, "get_latest_fear_and_greed", unexpected_fetch)
+    text, payload = sentiment.get_sentiment()
+    assert "SENTIMENT SHADOW ONLY" in text
+    assert payload is None

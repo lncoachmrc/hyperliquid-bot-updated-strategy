@@ -9,6 +9,11 @@ API_KEY = os.getenv("CMC_PRO_API_KEY")
 INTERVALLO_SECONDI = 3 * 60
 
 
+def _shadow_only_live_inputs() -> bool:
+    raw = os.getenv("NEWS_SENTIMENT_SHADOW_ONLY", "true")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_latest_fear_and_greed():
     if not API_KEY:
         print("Errore: La variabile d'ambiente CMC_PRO_API_KEY non è impostata.")
@@ -32,6 +37,13 @@ def get_latest_fear_and_greed():
 
 
 def get_sentiment() -> str:
+    if _shadow_only_live_inputs():
+        return (
+            "SENTIMENT SHADOW ONLY: Fear & Greed è escluso dalla decisione live "
+            "durante il campione; non usarlo come segnale direzionale.",
+            None,
+        )
+
     data = get_latest_fear_and_greed()
     if data:
         return (
