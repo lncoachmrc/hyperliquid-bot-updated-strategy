@@ -1,0 +1,30 @@
+name: V2 Foundation Tests
+
+on:
+  push:
+    branches:
+      - v2-clean-architecture-foundation
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-foundation-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install V2 foundation
+        run: python -m pip install -e 'v2[dev]'
+      - name: Compile
+        run: python -m compileall -q v2/src v2/tests
+      - name: Test deterministic contracts
+        run: pytest v2/tests
