@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException
 
+from hyperliquid_v2.runtime.operational_service import OperationalShadowService
 from hyperliquid_v2.runtime.settings import Settings
-from hyperliquid_v2.runtime.shadow_service import ShadowService
 from hyperliquid_v2.supervisor.github import GitHubDraftPRClient
 from hyperliquid_v2.supervisor.model import SupervisorProposalModel
 from hyperliquid_v2.supervisor.service import SupervisorService
@@ -21,7 +21,7 @@ logging.basicConfig(
 LOGGER = logging.getLogger("hyperliquid_v2")
 
 settings: Settings | None = None
-shadow: ShadowService | None = None
+shadow: OperationalShadowService | None = None
 supervisor: SupervisorService | None = None
 
 
@@ -29,7 +29,7 @@ supervisor: SupervisorService | None = None
 async def lifespan(_app: FastAPI):
     global settings, shadow, supervisor
     settings = Settings.from_env()
-    shadow = ShadowService(settings)
+    shadow = OperationalShadowService(settings)
     await shadow.start()
     proposal_model = SupervisorProposalModel(
         settings.supervisor_provider,
@@ -71,12 +71,11 @@ app = FastAPI(
 async def health() -> dict:
     if shadow is None or settings is None:
         raise HTTPException(status_code=503, detail="starting")
-    status = shadow.runtime_status()
     return {
         "status": "ok",
         "mode": "shadow",
         "live_trading_enabled": False,
-        "runtime": status,
+        "runtime": shadow.runtime_status(),
     }
 
 
