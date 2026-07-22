@@ -7,6 +7,7 @@ on:
       - dynamic-leverage-risk-budget
       - exit-reentry-profit-protection
       - candidate-upgrade-cycle-lock
+      - adverse-selection-prophet-shadow
   pull_request:
     branches:
       - main
@@ -58,4 +59,8 @@ jobs:
             tests/test_minimum_order_sizing.py \
             tests/test_position_management.py \
             tests/test_worker_cycle_guard.py \
-            tests/test_db_json_normalization.py
+            tests/test_db_json_normalization.py \
+            tests/test_entry_quality_policy.py \
+            tests/test_profit_protection_overlay.py \
+            tests/test_prophet_shadow.py \
+            tests/test_forecaster_horizons.py
