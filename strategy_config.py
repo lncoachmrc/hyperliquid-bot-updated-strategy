@@ -12,7 +12,7 @@ from typing import Dict, Tuple
 @dataclass(frozen=True)
 class StrategyConfig:
     name: str = "donchian_tsmom_vol_target_long_bias"
-    version: str = "1.5.0"
+    version: str = "1.6.0"
     symbols: Tuple[str, ...] = ("BTC", "ETH", "SOL")
     timeframe: str = "1d"
 
@@ -62,6 +62,20 @@ class StrategyConfig:
     tactical_stop_atr_multiple: float = 2.0
     tactical_max_stop_percent: float = 5.0
 
+    # Adverse-regime entries are intentionally much stricter than the generic
+    # tactical candidate. A 1/3 Donchian setup must be exceptional; 2/3 or 3/3
+    # still requires strong confirmation. Anti-chase controls prevent buying an
+    # already extended move or a setup with insufficient room to resistance.
+    adverse_weak_required_confirmations: int = 7
+    adverse_weak_min_volume_ratio: float = 1.20
+    adverse_aligned_required_confirmations: int = 6
+    adverse_aligned_min_volume_ratio: float = 1.00
+    adverse_max_distance_from_ema20_atr: float = 1.00
+    adverse_max_one_hour_extension_atr: float = 2.50
+    adverse_max_completed_bar_range_atr: float = 1.80
+    adverse_min_reward_to_risk: float = 1.50
+    adverse_max_correlated_long_positions: int = 1
+
     # A persistent executable candidate normally waits for the 30-minute LLM
     # cadence. Material quality upgrades bypass that cooldown: 5->6 / 6->7
     # confirmations, a higher leverage tier, an improved Donchian vote count or
@@ -83,11 +97,24 @@ class StrategyConfig:
     reentry_breakout_override_volume_ratio: float = 1.20
     reentry_breakout_lookback_bars: int = 4
 
-    # Profit give-back protection uses R multiples based on the original stop.
-    # Once a position has achieved >=1.5R MFE, a retracement to <=0.5R becomes
-    # eligible for an immediate management review/close, even before 30 minutes.
+    # The existing broad protection remains for neutral/favourable daily trades.
+    # Adverse tactical trades receive an earlier post-processing overlay: once
+    # MFE reaches 0.75R, a give-back to the fee-adjusted floor authorizes review.
     profit_protection_trigger_r: float = 1.50
     profit_protection_floor_r: float = 0.50
+    adverse_profit_protection_trigger_r: float = 0.75
+    adverse_profit_protection_floor_r: float = 0.20
+    adverse_estimated_round_trip_cost_pct: float = 0.10
+
+    # Prophet remains shadow-only until a sufficiently large comparable sample
+    # exists. These thresholds describe the hypothetical policy; they never
+    # mutate live operation, exposure, leverage or stop values.
+    prophet_shadow_policy_version: str = "1.0"
+    prophet_shadow_min_sample_size: int = 30
+    prophet_shadow_preferred_sample_size: int = 50
+    prophet_shadow_1h_veto_threshold_pct: float = -0.10
+    prophet_shadow_1h_positive_threshold_pct: float = 0.10
+    prophet_shadow_15m_timing_delay_threshold_pct: float = -0.05
 
     # Hyperliquid rejects perp orders below $10 notional. The execution adapter
     # also respects market size precision and never silently increases a request.
