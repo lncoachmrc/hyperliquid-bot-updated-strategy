@@ -6,9 +6,16 @@
   "required": [
     "action",
     "confidence",
+    "expected_value_hold_r",
+    "expected_value_close_r",
     "thesis_status",
     "main_reason",
-    "evidence_used"
+    "evidence_used",
+    "partial_fraction",
+    "selected_leverage",
+    "selected_effective_exposure",
+    "selected_balance_portion",
+    "selected_stop_distance_pct"
   ],
   "properties": {
     "action": {"enum": ["OPEN", "HOLD", "CLOSE", "TAKE_PARTIAL", "NO_TRADE"]},
@@ -18,6 +25,10 @@
     "thesis_status": {"type": "string"},
     "main_reason": {"type": "string"},
     "evidence_used": {"type": "array", "items": {"type": "string"}},
-    "partial_fraction": {"type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1}
+    "partial_fraction": {"type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+    "selected_leverage": {"type": ["integer", "null"], "minimum": 1},
+    "selected_effective_exposure": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "selected_balance_portion": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "selected_stop_distance_pct": {"type": ["number", "null"], "exclusiveMinimum": 0}
   }
 }
