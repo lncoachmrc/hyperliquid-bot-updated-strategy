@@ -26,11 +26,28 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install V2 operational service
-        run: python -m pip install -e 'v2[dev]'
+        run: python -m pip install -q -e 'v2[dev]'
       - name: Compile
         run: python -m compileall -q v2/src v2/tests
       - name: Test operational contracts
-        run: pytest v2/tests
+        id: pytest
+        shell: bash
+        run: |
+          set +e
+          pytest -q v2/tests > pytest-v2.log 2>&1
+          code=$?
+          cat pytest-v2.log
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2-pytest-log
+          path: pytest-v2.log
+      - name: Fail on test errors
+        if: steps.pytest.outputs.exit_code != '0'
+        run: exit 1
       - name: Verify shadow invariants
         run: |
           ! grep -R "PRIVATE_KEY" v2/src
