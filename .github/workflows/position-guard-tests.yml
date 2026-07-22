@@ -63,4 +63,5 @@ jobs:
             tests/test_entry_quality_policy.py \
             tests/test_profit_protection_overlay.py \
             tests/test_prophet_shadow.py \
-            tests/test_forecaster_horizons.py
+            tests/test_forecaster_horizons.py \
+            tests/test_shadow_candidate_selection.py
