@@ -7,7 +7,7 @@ WITH raw_samples AS (
     SELECT
         a.created_at AS sampled_at,
         i.ticker,
-        i.price::numeric AS sampled_price,
+        i.price::numeric AS indicator_price,
         i.strategy->'prophet_shadow' AS shadow,
         i.strategy->'prophet_shadow'->>'sample_key' AS sample_key
     FROM indicators_contexts i
@@ -22,7 +22,12 @@ unique_samples AS (
     SELECT DISTINCT ON (sample_key)
         sampled_at,
         ticker,
-        sampled_price,
+        indicator_price,
+        COALESCE(
+            NULLIF(shadow->'forecast_1h'->>'last_price', '')::numeric,
+            NULLIF(shadow->'forecast_15m'->>'last_price', '')::numeric,
+            indicator_price
+        ) AS baseline_price,
         sample_key,
         shadow,
         shadow->'hypothetical_policy'->>'verdict' AS shadow_verdict,
@@ -82,14 +87,20 @@ SELECT
     COUNT(*) AS unique_opportunities,
     COUNT(actual_price_15m) AS completed_15m_samples,
     ROUND(
-        AVG((actual_price_15m / sampled_price - 1) * 100)
-            FILTER (WHERE actual_price_15m IS NOT NULL),
+        AVG((actual_price_15m / baseline_price - 1) * 100)
+            FILTER (
+                WHERE actual_price_15m IS NOT NULL
+                  AND baseline_price > 0
+            ),
         4
     ) AS average_actual_15m_pct,
     COUNT(actual_price_1h) AS completed_1h_samples,
     ROUND(
-        AVG((actual_price_1h / sampled_price - 1) * 100)
-            FILTER (WHERE actual_price_1h IS NOT NULL),
+        AVG((actual_price_1h / baseline_price - 1) * 100)
+            FILTER (
+                WHERE actual_price_1h IS NOT NULL
+                  AND baseline_price > 0
+            ),
         4
     ) AS average_actual_1h_pct,
     ROUND(AVG(forecast_15m_pct), 4) AS average_forecast_15m_pct,
