@@ -1,16 +1,39 @@
 import warnings
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import pandas as pd
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
-from prophet import Prophet
 
 warnings.filterwarnings("ignore")
 
 
+def normalized_target_time(
+    generated_at: datetime,
+    horizon_minutes: int,
+) -> datetime:
+    """Return an exact UTC +15m/+60m target, never a calendar boundary."""
+    if horizon_minutes not in {15, 60}:
+        raise ValueError("horizon_minutes must be 15 or 60")
+    value = generated_at
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc) + timedelta(minutes=horizon_minutes)
+
+
+def _epoch_ms(value: datetime | pd.Timestamp) -> int:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+    return int(timestamp.timestamp() * 1000)
+
+
 class HyperliquidForecaster:
     def __init__(self, testnet: bool = True):
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+
         base_url = constants.TESTNET_API_URL if testnet else constants.MAINNET_API_URL
         self.info = Info(base_url, skip_ws=True)
         self.last_prices = {}
@@ -18,7 +41,7 @@ class HyperliquidForecaster:
     def _fetch_candles(self, coin: str, interval: str, limit: int) -> pd.DataFrame:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         interval_ms = {"15m": 15 * 60_000, "1h": 60 * 60_000}[interval]
-        start_ms = now_ms - limit * interval_ms
+        start_ms = now_ms - (limit + 2) * interval_ms
         data = self.info.candles_snapshot(
             name=coin,
             interval=interval,
@@ -28,62 +51,130 @@ class HyperliquidForecaster:
         if not data:
             raise RuntimeError(f"No candles for {coin} {interval}")
         frame = pd.DataFrame(data)
-        frame["ds"] = pd.to_datetime(frame["t"], unit="ms", utc=True).dt.tz_convert(None)
+        frame["open_time_ms"] = frame["t"].astype("int64")
+        frame["close_time_ms"] = frame["open_time_ms"] + interval_ms
+        frame = frame.loc[frame["close_time_ms"] <= now_ms].copy()
+        if frame.empty:
+            raise RuntimeError(f"No completed candles for {coin} {interval}")
+        frame["ds"] = pd.to_datetime(
+            frame["open_time_ms"], unit="ms", utc=True
+        ).dt.tz_convert(None)
         frame["y"] = frame["c"].astype(float)
-        return frame[["ds", "y"]].sort_values("ds").reset_index(drop=True)
+        return (
+            frame[["ds", "y", "open_time_ms", "close_time_ms"]]
+            .sort_values("ds")
+            .tail(limit)
+            .reset_index(drop=True)
+        )
 
-    def forecast(self, coin: str, interval: str) -> tuple:
-        if interval == "15m":
-            frame = self._fetch_candles(coin, "15m", limit=300)
-            frequency = "15min"
-        else:
-            frame = self._fetch_candles(coin, "1h", limit=500)
-            frequency = "h"
-        last_price = frame["y"].iloc[-1]
+    def forecast(
+        self,
+        coin: str,
+        interval: str,
+        *,
+        generated_at: Optional[datetime] = None,
+    ) -> tuple[pd.DataFrame, float, dict]:
+        # Lazy import keeps pure horizon tests lightweight while production still
+        # uses the installed Prophet package.
+        from prophet import Prophet
+
+        horizon_minutes = 15 if interval == "15m" else 60
+        limit = 300 if interval == "15m" else 500
+        frame = self._fetch_candles(coin, interval, limit=limit)
+        last_price = float(frame["y"].iloc[-1])
+        source_price_timestamp_ms = int(frame["close_time_ms"].iloc[-1])
+
+        generated = generated_at or datetime.now(timezone.utc)
+        if generated.tzinfo is None:
+            generated = generated.replace(tzinfo=timezone.utc)
+        generated = generated.astimezone(timezone.utc)
+        target = normalized_target_time(generated, horizon_minutes)
+        target_naive = pd.Timestamp(target).tz_convert(None)
+
         model = Prophet(daily_seasonality=True, weekly_seasonality=True)
-        model.fit(frame)
-        future = model.make_future_dataframe(periods=1, freq=frequency)
-        forecast = model.predict(future)
-        return forecast.tail(1)[["ds", "yhat", "yhat_lower", "yhat_upper"]], last_price
+        model.fit(frame[["ds", "y"]])
+        forecast = model.predict(pd.DataFrame({"ds": [target_naive]}))
+        metadata = {
+            "generated_at": generated,
+            "target_at": target,
+            "horizon_minutes": horizon_minutes,
+            "source_price_timestamp_ms": source_price_timestamp_ms,
+        }
+        return (
+            forecast.tail(1)[["ds", "yhat", "yhat_lower", "yhat_upper"]],
+            last_price,
+            metadata,
+        )
 
-    def forecast_many(self, tickers: list, intervals=("15m", "1h")):
+    def forecast_many(
+        self,
+        tickers: list,
+        intervals=("15m", "1h"),
+        *,
+        generated_at: Optional[datetime] = None,
+    ):
+        generated = generated_at or datetime.now(timezone.utc)
+        if generated.tzinfo is None:
+            generated = generated.replace(tzinfo=timezone.utc)
+        generated = generated.astimezone(timezone.utc)
+
         results = []
         for coin in tickers:
             for interval in intervals:
+                horizon_minutes = 15 if interval == "15m" else 60
+                target = normalized_target_time(generated, horizon_minutes)
+                timeframe = (
+                    "Prossimi 15 Minuti" if interval == "15m" else "Prossima Ora"
+                )
                 try:
-                    forecast_data, last_price = self.forecast(coin, interval)
+                    forecast_data, last_price, metadata = self.forecast(
+                        coin,
+                        interval,
+                        generated_at=generated,
+                    )
                     forecast = forecast_data.iloc[0]
                     variation = ((forecast["yhat"] - last_price) / last_price) * 100
-                    timeframe = (
-                        "Prossimi 15 Minuti" if interval == "15m" else "Prossima Ora"
-                    )
                     results.append(
                         {
                             "Ticker": coin,
                             "Timeframe": timeframe,
-                            "Ultimo Prezzo": round(last_price, 2),
-                            "Previsione": round(forecast["yhat"], 2),
-                            "Limite Inferiore": round(forecast["yhat_lower"], 2),
-                            "Limite Superiore": round(forecast["yhat_upper"], 2),
-                            "Variazione %": round(variation, 2),
-                            "Timestamp Previsione": forecast["ds"],
+                            "Horizon Minutes": horizon_minutes,
+                            "Ultimo Prezzo": round(last_price, 8),
+                            "Previsione": round(float(forecast["yhat"]), 8),
+                            "Limite Inferiore": round(
+                                float(forecast["yhat_lower"]), 8
+                            ),
+                            "Limite Superiore": round(
+                                float(forecast["yhat_upper"]), 8
+                            ),
+                            "Variazione %": round(float(variation), 4),
+                            "Forecast Generated At": _epoch_ms(
+                                metadata["generated_at"]
+                            ),
+                            "Timestamp Previsione": _epoch_ms(metadata["target_at"]),
+                            "Minutes To Target": horizon_minutes,
+                            "Source Price Timestamp": metadata[
+                                "source_price_timestamp_ms"
+                            ],
+                            "Target Normalized": True,
                         }
                     )
                 except Exception as exc:  # noqa: BLE001
                     results.append(
                         {
                             "Ticker": coin,
-                            "Timeframe": (
-                                "Prossimi 15 Minuti"
-                                if interval == "15m"
-                                else "Prossima Ora"
-                            ),
+                            "Timeframe": timeframe,
+                            "Horizon Minutes": horizon_minutes,
                             "Ultimo Prezzo": None,
                             "Previsione": None,
                             "Limite Inferiore": None,
                             "Limite Superiore": None,
                             "Variazione %": None,
-                            "Timestamp Previsione": None,
+                            "Forecast Generated At": _epoch_ms(generated),
+                            "Timestamp Previsione": _epoch_ms(target),
+                            "Minutes To Target": horizon_minutes,
+                            "Source Price Timestamp": None,
+                            "Target Normalized": True,
                             "error": str(exc),
                         }
                     )
