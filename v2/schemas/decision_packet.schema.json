@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digitalempower.local/schemas/decision_packet.schema.json",
+  "title": "DecisionPacket",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision_id",
+    "decision_type",
+    "market_timestamp",
+    "symbol",
+    "market_state",
+    "pump_momentum",
+    "risk_envelope",
+    "execution_costs",
+    "data_quality",
+    "allowed_actions",
+    "schema_version"
+  ],
+  "properties": {
+    "decision_id": {"type": "string", "minLength": 1},
+    "decision_type": {"enum": ["entry_review", "position_review", "emergency_review"]},
+    "market_timestamp": {"type": "string", "format": "date-time"},
+    "symbol": {"enum": ["BTC", "ETH", "SOL"]},
+    "trade_thesis": {"type": ["object", "null"]},
+    "position_state": {"type": ["object", "null"]},
+    "market_state": {"type": "object"},
+    "pump_momentum": {"type": "object"},
+    "quant_evidence": {"type": ["object", "null"]},
+    "risk_envelope": {"type": "object"},
+    "execution_costs": {"type": "object"},
+    "data_quality": {"type": "object"},
+    "allowed_actions": {
+      "type": "array",
+      "items": {"enum": ["OPEN", "HOLD", "CLOSE", "TAKE_PARTIAL", "NO_TRADE"]},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "schema_version": {"const": "1.0"}
+  }
+}
