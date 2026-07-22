@@ -1,3 +1,5 @@
+import pytest
+
 from hyperliquid_v2.domain.models import PositionPhase
 from hyperliquid_v2.market_data.features import FeatureSnapshot
 from hyperliquid_v2.market_data.momentum import PumpMomentum
@@ -65,7 +67,7 @@ def test_tracker_detects_exhaustion_and_protects_green_position():
         round_trip_cost_bps=10,
     )
 
-    assert result.position_state.current_r == 1.0
+    assert result.position_state.current_r == pytest.approx(1.0)
     assert result.position_state.phase is PositionPhase.EXHAUSTION
     assert result.exit_assessment.close_review is True
     assert result.exit_assessment.dynamic_profit_floor_r is not None
