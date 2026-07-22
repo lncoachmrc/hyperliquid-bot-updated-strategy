@@ -1,70 +1,59 @@
 {
-  "name": "Hyperliquid V2 Supervisor - audit only",
+  "name": "Hyperliquid V2 Daily Supervisor",
   "active": false,
-  "settings": {"executionOrder": "v1"},
   "nodes": [
     {
+      "parameters": {"rule": {"interval": [{"field": "hours", "hoursInterval": 24}]}},
       "id": "schedule",
       "name": "Every 24 hours",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 0],
-      "parameters": {"rule": {"interval": [{"field": "hours", "hoursInterval": 24}]}}
+      "position": [0, 0]
     },
     {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.V2_SUPERVISOR_URL + '/supervisor/run' }}",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "X-Supervisor-Token", "value": "={{ $env.V2_SUPERVISOR_TOKEN }}"}]},
+        "options": {"timeout": 180000}
+      },
       "id": "audit",
-      "name": "Build read-only evidence snapshot",
+      "name": "Run V2 Supervisor",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [260, 0],
-      "parameters": {
-        "method": "POST",
-        "url": "={{$env.SUPERVISOR_WORKER_URL}}/v1/audit",
-        "sendHeaders": true,
-        "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{$env.SUPERVISOR_WORKER_TOKEN}}"}]},
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "={\"mode\":\"read_only\",\"maximum_changes\":1,\"allow_merge\":false,\"allow_deploy\":false}"
-      }
+      "position": [260, 0]
     },
     {
-      "id": "gate",
-      "name": "Proposal passed evidence gate?",
+      "parameters": {"conditions": {"string": [{"value1": "={{ $json.status }}", "operation": "equal", "value2": "draft_pr_created"}]}},
+      "id": "pr-check",
+      "name": "Draft PR created?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [520, 0],
-      "parameters": {"conditions": {"options": {"caseSensitive": true}, "conditions": [{"leftValue": "={{$json.outcome}}", "rightValue": "PROPOSE_PR", "operator": {"type": "string", "operation": "equals"}}]}}
+      "typeVersion": 2,
+      "position": [520, 0]
     },
     {
-      "id": "proposal",
-      "name": "Create experiment branch and draft PR",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [780, -100],
-      "parameters": {
-        "method": "POST",
-        "url": "={{$env.SUPERVISOR_WORKER_URL}}/v1/proposals/{{$json.run_id}}/materialize",
-        "sendHeaders": true,
-        "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{$env.SUPERVISOR_WORKER_TOKEN}}"}]},
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "={\"draft_pr\":true,\"merge\":false,\"deploy\":false}"
-      }
+      "parameters": {"content": "={{ 'V2 Supervisor created a draft PR: ' + ($json.github.url || 'URL unavailable') }}"},
+      "id": "notify",
+      "name": "Notification payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [780, -80]
     },
     {
-      "id": "report",
-      "name": "Archive no-change report",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
-      "position": [780, 100],
-      "parameters": {}
+      "parameters": {"content": "={{ 'V2 Supervisor result: ' + $json.status + '. No live merge or deploy was authorized.' }}"},
+      "id": "no-change",
+      "name": "No-change payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [780, 100]
     }
   ],
   "connections": {
-    "Every 24 hours": {"main": [[{"node": "Build read-only evidence snapshot", "type": "main", "index": 0}]]},
-    "Build read-only evidence snapshot": {"main": [[{"node": "Proposal passed evidence gate?", "type": "main", "index": 0}]]},
-    "Proposal passed evidence gate?": {"main": [[{"node": "Create experiment branch and draft PR", "type": "main", "index": 0}], [{"node": "Archive no-change report", "type": "main", "index": 0}]]}
-  }
+    "Every 24 hours": {"main": [[{"node": "Run V2 Supervisor", "type": "main", "index": 0}]]},
+    "Run V2 Supervisor": {"main": [[{"node": "Draft PR created?", "type": "main", "index": 0}]]},
+    "Draft PR created?": {"main": [[{"node": "Notification payload", "type": "main", "index": 0}], [{"node": "No-change payload", "type": "main", "index": 0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "meta": {"shadowOnly": true, "mergeAuthorized": false, "deployAuthorized": false}
 }
