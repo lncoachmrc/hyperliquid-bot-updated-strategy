@@ -14,10 +14,12 @@ from profit_protection_overlay import apply_adverse_profit_protection
 from prophet_shadow import attach_prophet_shadow_evaluations
 from dashboard_forecast_cache import resolve_dashboard_forecasts
 from shadow_candidate_selection import flat_account_shadow_candidates
+from pre_trade_revalidation import apply_live_breakout_revalidation
+from severe_weakness_shadow import build_severe_weakness_exit_shadow
+from external_close_reconciliation import reconcile_pending_external_closures
 from performance_observability import (
     ensure_performance_observability_schema,
     link_entry_opportunity_samples,
-    reconcile_pending_external_closures,
     record_and_observe_entry_opportunities,
 )
 from execution_policy import (
@@ -312,17 +314,44 @@ try:
             "revisione posizione ancora dovuta. HOLD deterministico."
         )
 
+    # Severe-weakness evaluation is created only after the decision/prompt path.
+    # It is persisted for counterfactual analysis and cannot authorize a CLOSE.
+    severe_weakness_exit_shadow_summary = build_severe_weakness_exit_shadow(
+        management_state
+    )
+
     out["position_management"] = management_state
     out["entry_quality_policy"] = entry_quality_summary
     out["prophet_shadow"] = prophet_shadow_summary
+    out["severe_weakness_exit_shadow"] = severe_weakness_exit_shadow_summary
     out["dashboard_forecasts"] = {
         "source": dashboard_forecast_source,
         "count": len(dashboard_forecasts_json),
     }
     out["performance_observability"] = performance_observability_summary
 
+    # Weak 1/3 adverse breakouts are revalidated against a fresh Hyperliquid mid
+    # immediately before persistence/execution. This guard can only OPEN -> HOLD.
+    live_mids = {}
+    live_mid_error = None
+    if str(out.get("operation") or "").lower() == "open":
+        try:
+            live_mids = bot.info.all_mids()
+        except Exception as mid_error:  # noqa: BLE001
+            live_mid_error = str(mid_error)
+            print(
+                "[pre_trade_revalidation] Impossibile leggere i live mids; "
+                f"i weak 1/3 adverse OPEN falliscono in sicurezza: {mid_error}"
+            )
+    out = apply_live_breakout_revalidation(
+        out,
+        indicators_json,
+        live_mids,
+        live_mid_error=live_mid_error,
+    )
+
     # Persist the final executable decision BEFORE touching the exchange. Any LLM
-    # decision adjusted by the safety guard retains the original in raw_payload.
+    # decision adjusted by a safety guard retains the original in raw_payload.
     op_id = db_utils.log_bot_operation(
         out,
         system_prompt=system_prompt,
@@ -355,6 +384,8 @@ try:
         f"[db_utils] Decisione inserita con id={op_id}, "
         f"source={out.get('decision_source')}, "
         f"guard_adjusted={out.get('decision_guard_adjusted', False)}, "
+        f"pre_trade_adjusted={out.get('pre_trade_revalidation_adjusted', False)}, "
+        f"severe_weakness_shadow_triggers={severe_weakness_exit_shadow_summary.get('trigger_count', 0)}, "
         f"prophet_shadow_samples={prophet_shadow_summary.get('observation_count', 0)}, "
         f"entry_observation_samples={entry_observation_state.get('candidate_samples', 0)}, "
         f"dashboard_forecasts={len(dashboard_forecasts_json)} "
@@ -402,6 +433,12 @@ except Exception as e:
         "entry_quality_policy": locals().get("entry_quality_summary"),
         "position_management": locals().get("management_state"),
         "prophet_shadow": locals().get("prophet_shadow_summary"),
+        "severe_weakness_exit_shadow": locals().get(
+            "severe_weakness_exit_shadow_summary"
+        ),
+        "pre_trade_revalidation": (
+            locals().get("out") or {}
+        ).get("pre_trade_revalidation"),
         "performance_observability": locals().get(
             "performance_observability_summary"
         ),
