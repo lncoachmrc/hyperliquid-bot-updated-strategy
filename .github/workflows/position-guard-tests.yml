@@ -10,6 +10,7 @@ on:
       - adverse-selection-prophet-shadow
       - news-sentiment-shadow
       - performance-observability-ledger
+      - pretrade-breakout-stopid-shadow-exit
   pull_request:
     branches:
       - main
@@ -70,4 +71,7 @@ jobs:
             tests/test_shadow_candidate_selection.py \
             tests/test_news_sentiment_shadow.py \
             tests/test_performance_observability.py \
-            tests/test_external_stop_detection.py
+            tests/test_external_stop_detection.py \
+            tests/test_pre_trade_revalidation.py \
+            tests/test_severe_weakness_shadow.py \
+            tests/test_external_close_reconciliation.py
