@@ -148,3 +148,59 @@ SELECT
     COUNT(*) >= 30 AS minimum_30_reached,
     COUNT(*) >= 50 AS preferred_50_reached
 FROM entry_opportunity_samples;
+
+-- 7. Last-moment weak-breakout revalidation outcomes.
+SELECT
+    created_at,
+    symbol,
+    operation,
+    raw_payload->'pre_trade_revalidation'->>'vote_class' AS vote_class,
+    raw_payload->'pre_trade_revalidation'->>'previous_1h_high' AS previous_1h_high,
+    raw_payload->'pre_trade_revalidation'->>'live_mid' AS live_mid,
+    raw_payload->'pre_trade_revalidation'->>'passed' AS passed,
+    raw_payload->'pre_trade_revalidation'->>'block_reason' AS block_reason,
+    raw_payload->>'pre_trade_revalidation_adjusted' AS adjusted,
+    raw_payload->'pre_trade_original_decision'->>'operation' AS original_operation
+FROM bot_operations
+WHERE raw_payload ? 'pre_trade_revalidation'
+ORDER BY created_at DESC;
+
+-- 8. Severe-weakness exit shadow samples, deduplicated by sample key.
+WITH observations AS (
+    SELECT
+        bo.created_at,
+        bo.symbol,
+        observation.value AS shadow,
+        observation.value->>'sample_key' AS sample_key,
+        ROW_NUMBER() OVER (
+            PARTITION BY observation.value->>'sample_key'
+            ORDER BY bo.created_at
+        ) AS sample_rank
+    FROM bot_operations bo
+    CROSS JOIN LATERAL jsonb_each(
+        COALESCE(
+            bo.raw_payload->'severe_weakness_exit_shadow'->'observations',
+            '{}'::jsonb
+        )
+    ) AS observation(symbol, value)
+    WHERE COALESCE(
+        (observation.value->>'triggered')::boolean,
+        FALSE
+    ) IS TRUE
+)
+SELECT
+    created_at AS shadow_observed_at,
+    symbol,
+    sample_key,
+    shadow->>'opened_at' AS opened_at,
+    shadow->>'completed_15m_bar' AS completed_15m_bar,
+    shadow->>'position_age_minutes' AS position_age_minutes,
+    shadow->>'entry_price' AS entry_price,
+    shadow->>'hypothetical_exit_price' AS hypothetical_exit_price,
+    shadow->>'current_r' AS current_r,
+    shadow->>'tactical_confirmations' AS tactical_confirmations,
+    shadow->>'consecutive_weak_bars' AS consecutive_weak_bars,
+    shadow->>'live_exit_authorized_unchanged' AS live_exit_authorized
+FROM observations
+WHERE sample_rank = 1
+ORDER BY shadow_observed_at DESC;
