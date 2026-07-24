@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -10,7 +11,10 @@ from hyperliquid_v2.domain.models import (
     RiskEnvelope,
 )
 from hyperliquid_v2.llm_router.async_router import AsyncModelRouter
-from hyperliquid_v2.llm_router.providers import DeterministicShadowProvider
+from hyperliquid_v2.llm_router.providers import (
+    DeterministicShadowProvider,
+    HttpDecisionProvider,
+)
 
 
 def packet():
@@ -87,3 +91,100 @@ async def test_router_survives_primary_provider_outage():
     routed = await AsyncModelRouter(FailingProvider(), None).decide(packet())
     assert routed.final_action is DecisionAction.NO_TRADE
     assert routed.source == "provider_failure_fallback"
+
+
+class StubResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(self.payload),
+                    }
+                }
+            ]
+        }
+
+
+class StubDeepSeekClient:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = []
+
+    async def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return StubResponse(self.payloads.pop(0))
+
+    async def aclose(self):
+        return None
+
+
+def deepseek_payload(**overrides):
+    payload = {
+        "action": "NO_TRADE",
+        "confidence": 0.82,
+        "expected_value_hold_r": -0.2,
+        "expected_value_close_r": 0.0,
+        "thesis_status": "review",
+        "main_reason": "negative expected value",
+        "evidence_used": ["quant_evidence"],
+        "partial_fraction": None,
+        "selected_leverage": None,
+        "selected_effective_exposure": None,
+        "selected_balance_portion": None,
+        "selected_stop_distance_pct": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_deepseek_repairs_once_when_confidence_is_missing(caplog):
+    first = deepseek_payload()
+    first.pop("confidence")
+    repaired = deepseek_payload(confidence=0.74)
+    provider = HttpDecisionProvider(
+        "deepseek",
+        "deepseek-v4-flash",
+        api_key="test-key",
+    )
+    await provider.client.aclose()
+    provider.client = StubDeepSeekClient([first, repaired])
+
+    decision = await provider.decide(packet())
+
+    assert decision.action is DecisionAction.NO_TRADE
+    assert decision.confidence == pytest.approx(0.74)
+    assert len(provider.client.calls) == 2
+    assert "confidence" in caplog.text
+    first_request = provider.client.calls[0][1]["json"]
+    repair_request = provider.client.calls[1][1]["json"]
+    assert '"confidence"' in first_request["messages"][0]["content"]
+    assert "confidence" in repair_request["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_fails_after_single_incomplete_repair_attempt():
+    incomplete = deepseek_payload()
+    incomplete.pop("confidence")
+    provider = HttpDecisionProvider(
+        "deepseek",
+        "deepseek-v4-flash",
+        api_key="test-key",
+    )
+    await provider.client.aclose()
+    provider.client = StubDeepSeekClient([incomplete, incomplete])
+
+    with pytest.raises(
+        ValueError,
+        match="after one repair attempt: confidence",
+    ):
+        await provider.decide(packet())
+
+    assert len(provider.client.calls) == 2
