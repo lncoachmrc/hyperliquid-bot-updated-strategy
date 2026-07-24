@@ -30,6 +30,7 @@ class Settings:
     feature_interval_seconds: int
     position_review_seconds: int
     entry_review_seconds: int
+    entry_decision_cooldown_seconds: int
     default_stop_pct: float
     round_trip_cost_bps: float
     shadow_only: bool
@@ -49,6 +50,11 @@ class Settings:
     quant_minimum_samples: int
     max_risk_fraction: float
     max_effective_exposure: float
+    failed_breakout_enabled: bool
+    failed_breakout_scan_seconds: int
+    failed_breakout_replay_enabled: bool
+    failed_breakout_risk_fraction: float
+    failed_breakout_max_effective_exposure: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -81,6 +87,11 @@ class Settings:
             feature_interval_seconds=_int("V2_FEATURE_INTERVAL_SECONDS", 15, 5),
             position_review_seconds=_int("V2_POSITION_REVIEW_SECONDS", 60, 15),
             entry_review_seconds=_int("V2_ENTRY_REVIEW_SECONDS", 300, 60),
+            entry_decision_cooldown_seconds=_int(
+                "V2_ENTRY_DECISION_COOLDOWN_SECONDS",
+                60,
+                15,
+            ),
             default_stop_pct=_float("V2_DEFAULT_STOP_PCT", 0.60),
             round_trip_cost_bps=_float("V2_ROUND_TRIP_COST_BPS", 10.0),
             shadow_only=shadow_only,
@@ -100,4 +111,22 @@ class Settings:
             quant_minimum_samples=_int("V2_QUANT_MINIMUM_SAMPLES", 50, 30),
             max_risk_fraction=_float("V2_MAX_RISK_FRACTION", 0.005),
             max_effective_exposure=_float("V2_MAX_EFFECTIVE_EXPOSURE", 0.50),
+            failed_breakout_enabled=_bool("V2_FAILED_BREAKOUT_ENABLED", True),
+            failed_breakout_scan_seconds=_int(
+                "V2_FAILED_BREAKOUT_SCAN_SECONDS",
+                15,
+                5,
+            ),
+            failed_breakout_replay_enabled=_bool(
+                "V2_FAILED_BREAKOUT_REPLAY_ENABLED",
+                True,
+            ),
+            failed_breakout_risk_fraction=_float(
+                "V2_FAILED_BREAKOUT_RISK_FRACTION",
+                0.0015,
+            ),
+            failed_breakout_max_effective_exposure=_float(
+                "V2_FAILED_BREAKOUT_MAX_EFFECTIVE_EXPOSURE",
+                0.20,
+            ),
         )
