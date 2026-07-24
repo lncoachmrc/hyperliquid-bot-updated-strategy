@@ -83,6 +83,41 @@ CREATE TABLE IF NOT EXISTS v2_quant_observations (
     payload JSONB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS v2_failed_breakout_events (
+    event_key TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol TEXT NOT NULL,
+    original_direction TEXT NOT NULL,
+    reversal_direction TEXT NOT NULL,
+    breakout_level NUMERIC(30,10) NOT NULL,
+    breakout_extreme NUMERIC(30,10) NOT NULL,
+    armed_at TIMESTAMPTZ NOT NULL,
+    failed_at TIMESTAMPTZ,
+    entry_mode TEXT,
+    status TEXT NOT NULL,
+    decision_id TEXT,
+    entry_price NUMERIC(30,10),
+    stop_price NUMERIC(30,10),
+    target_price NUMERIC(30,10),
+    closed_at TIMESTAMPTZ,
+    mfe_r NUMERIC(20,10),
+    mae_r NUMERIC(20,10),
+    gross_r NUMERIC(20,10),
+    cost_r NUMERIC(20,10),
+    realized_net_r NUMERIC(20,10),
+    outcome TEXT,
+    source_sample_key TEXT,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v2_failed_breakout_symbol_time
+    ON v2_failed_breakout_events(symbol, armed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_v2_failed_breakout_status
+    ON v2_failed_breakout_events(status, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_failed_breakout_source_sample
+    ON v2_failed_breakout_events(source_sample_key)
+    WHERE source_sample_key IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS v2_service_heartbeats (
     service_name TEXT PRIMARY KEY,
     observed_at TIMESTAMPTZ NOT NULL,
