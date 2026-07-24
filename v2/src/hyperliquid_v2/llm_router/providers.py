@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import Any, Protocol
@@ -12,6 +13,9 @@ from hyperliquid_v2.domain.models import (
     DecisionPacket,
     ModelDecision,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 DECISION_JSON_SCHEMA: dict[str, Any] = {
@@ -249,6 +253,72 @@ class HttpDecisionProvider:
         self,
         packet: DecisionPacket,
     ) -> dict[str, Any]:
+        schema_text = json.dumps(
+            DECISION_JSON_SCHEMA,
+            separators=(",", ":"),
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    _system_prompt()
+                    + " Output JSON only. Return every required key "
+                    "from this JSON Schema exactly once and do not "
+                    "add any other key: "
+                    + schema_text
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    packet.to_dict(),
+                    separators=(",", ":"),
+                ),
+            },
+        ]
+        payload, content = await self._deepseek_request(messages)
+        missing = _missing_required_keys(payload)
+        if not missing:
+            return payload
+
+        LOGGER.warning(
+            "DeepSeek response missing required decision fields; "
+            "retrying once fields=%s",
+            ",".join(missing),
+        )
+        repair_messages = [
+            *messages,
+            {
+                "role": "assistant",
+                "content": content,
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Your previous JSON omitted these required keys: "
+                    + ", ".join(missing)
+                    + ". Return one corrected JSON object only. "
+                    "Preserve supported values from the prior answer, "
+                    "do not invent market data, and include every "
+                    "required key from the schema. Use null only where "
+                    "the schema permits null."
+                ),
+            },
+        ]
+        repaired, _ = await self._deepseek_request(repair_messages)
+        still_missing = _missing_required_keys(repaired)
+        if still_missing:
+            raise ValueError(
+                "DeepSeek response missing required decision fields "
+                "after one repair attempt: "
+                + ", ".join(still_missing)
+            )
+        return repaired
+
+    async def _deepseek_request(
+        self,
+        messages: list[dict[str, str]],
+    ) -> tuple[dict[str, Any], str]:
         response = await self.client.post(
             "https://api.deepseek.com/chat/completions",
             headers={
@@ -257,23 +327,7 @@ class HttpDecisionProvider:
             },
             json={
                 "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            _system_prompt()
-                            + " Output JSON only, matching the required "
-                            "keys exactly."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            packet.to_dict(),
-                            separators=(",", ":"),
-                        ),
-                    },
-                ],
+                "messages": messages,
                 "response_format": {
                     "type": "json_object",
                 },
@@ -283,7 +337,12 @@ class HttpDecisionProvider:
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
-        return json.loads(content)
+        payload = json.loads(content)
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "DeepSeek response must be a JSON object"
+            )
+        return payload, content
 
 
 class DeterministicShadowProvider:
@@ -520,6 +579,17 @@ def _decision_from_payload(
         ),
         latency_ms=latency_ms,
         raw=payload,
+    )
+
+
+def _missing_required_keys(
+    payload: dict[str, Any],
+) -> tuple[str, ...]:
+    required = DECISION_JSON_SCHEMA["required"]
+    return tuple(
+        str(key)
+        for key in required
+        if key not in payload
     )
 
 
