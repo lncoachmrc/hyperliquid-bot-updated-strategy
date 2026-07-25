@@ -62,7 +62,7 @@ def test_reentry_cooldown_blocks_candidate_before_llm_call():
     assert reason == "flat_account_and_no_executable_candidate"
 
 
-def test_persistent_flat_candidate_waits_for_scheduled_review():
+def test_persistent_flat_candidate_waits_before_accelerated_review():
     invoke, reason = should_invoke_llm(
         [_indicator("tactical_long_candidate")],
         {"open_positions": []},
@@ -70,13 +70,45 @@ def test_persistent_flat_candidate_waits_for_scheduled_review():
         {
             "new_candidate_symbols": [],
             "llm_review_due": False,
+            "minutes_since_last_llm": 14.9,
         },
     )
     assert invoke is False
     assert reason == "persistent_candidate_review_not_due"
 
 
-def test_persistent_flat_candidate_invokes_when_review_is_due():
+def test_persistent_flat_candidate_invokes_after_15_minutes():
+    invoke, reason = should_invoke_llm(
+        [_indicator("tactical_long_candidate")],
+        {"open_positions": []},
+        "[]",
+        {
+            "new_candidate_symbols": [],
+            "llm_review_due": False,
+            "minutes_since_last_llm": 15.0,
+        },
+    )
+    assert invoke is True
+    assert reason == "persistent_flat_candidate_review:ETH:after_15m"
+
+
+def test_flat_candidate_review_interval_is_configurable(monkeypatch):
+    monkeypatch.setenv("FLAT_CANDIDATE_LLM_REVIEW_MINUTES", "10")
+    invoke, reason = should_invoke_llm(
+        [_indicator("tactical_long_candidate")],
+        {"open_positions": []},
+        "[]",
+        {
+            "new_candidate_symbols": [],
+            "llm_review_due": False,
+            "minutes_since_last_llm": 10.0,
+        },
+    )
+    assert invoke is True
+    assert reason == "persistent_flat_candidate_review:ETH:after_10m"
+
+
+def test_persistent_flat_candidate_invokes_when_review_is_due_without_timestamp():
     invoke, reason = should_invoke_llm(
         [_indicator("tactical_long_candidate")],
         {"open_positions": []},
@@ -101,7 +133,7 @@ def test_non_executable_candidate_skips_llm():
     assert reason == "flat_account_and_no_executable_candidate"
 
 
-def test_stable_open_position_skips_llm_until_review_due():
+def test_stable_open_position_skips_llm_until_review_due_even_after_15_minutes():
     invoke, reason = should_invoke_llm(
         [_indicator("tactical_long_candidate")],
         {"open_positions": [{"symbol": "ETH", "side": "long"}]},
@@ -109,6 +141,7 @@ def test_stable_open_position_skips_llm_until_review_due():
         {
             "immediate_llm_reasons": [],
             "llm_review_due": False,
+            "minutes_since_last_llm": 20.0,
             "preferred_hold_symbol": "ETH",
         },
     )
