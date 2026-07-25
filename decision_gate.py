@@ -7,10 +7,13 @@ candidate or a position-management review is due.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 
 ACTIONABLE_CANDIDATES = {"long_candidate", "tactical_long_candidate"}
+DEFAULT_FLAT_CANDIDATE_REVIEW_MINUTES = 15.0
+MINIMUM_FLAT_CANDIDATE_REVIEW_MINUTES = 5.0
 
 
 def _has_recent_stop_loss(stop_losses: Any) -> bool:
@@ -35,6 +38,28 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"true", "1", "1.0", "yes"}
     return False
+
+
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _flat_candidate_review_minutes() -> float:
+    """Return the flat-candidate review cadence without affecting open positions."""
+    raw = os.getenv(
+        "FLAT_CANDIDATE_LLM_REVIEW_MINUTES",
+        str(DEFAULT_FLAT_CANDIDATE_REVIEW_MINUTES),
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_FLAT_CANDIDATE_REVIEW_MINUTES
+    return max(MINIMUM_FLAT_CANDIDATE_REVIEW_MINUTES, value)
 
 
 def _actionable_symbols(indicators: Iterable[Dict[str, Any]]) -> list[str]:
@@ -88,9 +113,11 @@ def should_invoke_llm(
     if not candidates:
         return False, "flat_account_and_no_executable_candidate"
 
-    # A persistent flat-account candidate does not justify an LLM call every ten
-    # minutes. Call immediately on a new candidate OR when the candidate materially
-    # improves in quality, otherwise use the normal 30-minute review cadence.
+    # New and materially improved candidates remain immediate. An unchanged but
+    # still executable flat-account candidate is reviewed more frequently than a
+    # stable open position because its entry window can disappear before the old
+    # 30-minute global cadence. This changes only LLM timing; it cannot create a
+    # candidate, bypass re-entry, alter risk, or authorize execution.
     if isinstance(management_state, dict) and "llm_review_due" in management_state:
         new_candidates = {
             str(item).upper()
@@ -107,6 +134,21 @@ def should_invoke_llm(
         upgraded = [symbol for symbol in candidates if symbol in upgraded_candidates]
         if upgraded:
             return True, "candidate_quality_upgrade:" + ",".join(upgraded)
+
+        minutes_since_last_llm = _as_float(
+            management_state.get("minutes_since_last_llm")
+        )
+        accelerated_review_minutes = _flat_candidate_review_minutes()
+        if (
+            minutes_since_last_llm is not None
+            and minutes_since_last_llm >= accelerated_review_minutes
+        ):
+            return (
+                True,
+                "persistent_flat_candidate_review:"
+                + ",".join(candidates)
+                + f":after_{accelerated_review_minutes:g}m",
+            )
 
         if management_state.get("llm_review_due") is True:
             return True, "persistent_candidate_scheduled_review"
