@@ -169,17 +169,33 @@ jobs:
       - name: Install Railway CLI
         run: npm install --global @railway/cli
 
-      - name: Reassert hard shadow variables
+      - name: Reassert hard shadow variables without triggering a competing deploy
         shell: bash
         run: |
           set -euo pipefail
           railway variable set \
             --service v2-shadow \
             --environment production \
+            --skip-deploys \
             V2_SHADOW_ONLY=true \
             V2_LIVE_TRADING_ENABLED=false \
             V2_TACTICAL_FADE_SHADOW_ENABLED=true \
             V2_ROUND_TRIP_COST_BPS=10
+
+      - name: Stop the previous V2 singleton before replacement
+        shell: bash
+        run: |
+          set +e
+          railway down \
+            --service v2-shadow \
+            --environment production \
+            --yes
+          down_code=$?
+          if [[ "$down_code" -ne 0 ]]; then
+            echo "No active successful v2-shadow deployment was removed; continuing with a clean deploy."
+          fi
+          sleep 10
+          exit 0
 
       - name: Upload and deploy only the V2 directory
         id: railway_up
