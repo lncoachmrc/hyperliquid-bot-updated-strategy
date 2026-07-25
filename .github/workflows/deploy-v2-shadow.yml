@@ -19,6 +19,7 @@ concurrency:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   validate:
@@ -48,11 +49,73 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ! grep -R "PRIVATE_KEY" v2/src
-          ! grep -R "market_open\|market_close\|exchange\.order" v2/src
-          grep -q 'V2_SHADOW_ONLY", True' v2/src/hyperliquid_v2/runtime/settings.py
-          grep -q 'V2_LIVE_TRADING_ENABLED", False' v2/src/hyperliquid_v2/runtime/settings.py
-          grep -q 'V2_TACTICAL_FADE_SHADOW_ENABLED", True' v2/src/hyperliquid_v2/runtime/settings.py
+          python - <<'PY'
+          import ast
+          import os
+          from pathlib import Path
+          from unittest.mock import patch
+
+          from hyperliquid_v2.runtime.settings import Settings
+
+          forbidden_imports = ("hyperliquid.exchange", "eth_account")
+          violations: list[str] = []
+
+          for path in Path("v2/src").rglob("*.py"):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      for alias in node.names:
+                          if alias.name.startswith(forbidden_imports):
+                              violations.append(f"{path}: forbidden import {alias.name}")
+                  elif isinstance(node, ast.ImportFrom):
+                      module = node.module or ""
+                      if module.startswith(forbidden_imports):
+                          violations.append(f"{path}: forbidden import {module}")
+                  elif isinstance(node, ast.Call) and node.args:
+                      first = node.args[0]
+                      if not isinstance(first, ast.Constant) or first.value != "PRIVATE_KEY":
+                          continue
+                      func = node.func
+                      if isinstance(func, ast.Attribute) and func.attr in {"getenv", "get"}:
+                          violations.append(f"{path}: PRIVATE_KEY environment access")
+                  elif isinstance(node, ast.Subscript):
+                      target = node.value
+                      if (
+                          isinstance(target, ast.Attribute)
+                          and isinstance(target.value, ast.Name)
+                          and target.value.id == "os"
+                          and target.attr == "environ"
+                          and isinstance(node.slice, ast.Constant)
+                          and node.slice.value == "PRIVATE_KEY"
+                      ):
+                          violations.append(f"{path}: PRIVATE_KEY environment access")
+
+          if violations:
+              raise SystemExit("\n".join(violations))
+
+          safe_env = {
+              "DATABASE_URL": "postgresql://shadow:shadow@localhost:5432/shadow",
+              "V2_WALLET_ADDRESS": "0x" + "0" * 40,
+              "V2_SHADOW_ONLY": "true",
+              "V2_LIVE_TRADING_ENABLED": "false",
+              "V2_TACTICAL_FADE_SHADOW_ENABLED": "true",
+          }
+          with patch.dict(os.environ, safe_env, clear=True):
+              settings = Settings.from_env()
+              assert settings.shadow_only is True
+              assert settings.live_trading_enabled is False
+              assert settings.tactical_fade_shadow_enabled is True
+
+          unsafe_env = dict(safe_env)
+          unsafe_env["V2_LIVE_TRADING_ENABLED"] = "true"
+          with patch.dict(os.environ, unsafe_env, clear=True):
+              try:
+                  Settings.from_env()
+              except RuntimeError:
+                  pass
+              else:
+                  raise AssertionError("V2 accepted live trading configuration")
+          PY
 
   deploy:
     name: Deploy only v2-shadow
@@ -62,6 +125,27 @@ jobs:
     timeout-minutes: 30
     environment: production
     steps:
+      - name: Mark V2 shadow deployment pending
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -n \
+            --arg state pending \
+            --arg context 'v2-shadow - hyperliquid-v2-shadow' \
+            --arg description 'Validating and deploying isolated non-executable V2 shadow' \
+            --arg target_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${COMMIT_SHA}" \
+            --data "$payload"
+
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -115,3 +199,32 @@ jobs:
             --environment production \
             --limit 1 \
             --json || true
+
+      - name: Publish final V2 shadow deployment status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          state=failure
+          description='V2 shadow deployment failed; V1 was not targeted'
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            state=success
+            description='V2 shadow deployed successfully with live trading disabled'
+          fi
+          payload="$(jq -n \
+            --arg state "$state" \
+            --arg context 'v2-shadow - hyperliquid-v2-shadow' \
+            --arg description "$description" \
+            --arg target_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${COMMIT_SHA}" \
+            --data "$payload"
