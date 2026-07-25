@@ -24,11 +24,23 @@ V2 is an isolated, read-only shadow system. It streams Hyperliquid market and wa
    - stop placement is beyond the failed breakout extreme plus an ATR buffer;
    - every event is deduplicated and persisted in `v2_failed_breakout_events`.
 5. Historical replay of blocked upside breakouts using completed 15-minute closes reconstructed from stored market-feature buckets, with stop, target, MFE, MAE, costs and net R.
-6. Position Guardian with state transitions, MFE/MAE, green-to-red tracking, dynamic profit floor and `EV_HOLD` versus `EV_CLOSE`.
-7. Quant Expert based on comparable outcomes and uncertainty, never a BUY score.
-8. Multi-provider LLM router with a conservative challenger and deterministic fallback when API keys are absent.
-9. Daily Supervisor endpoint for n8n, with evidence gates and draft-PR-only GitHub access.
-10. PostgreSQL append-only audit ledger and service health endpoints.
+6. Fixed tactical-fade research stream:
+   - observes the existing adverse-regime `tactical_long_candidate` signature as a counterfactual **short**;
+   - records every structural signal that also passes the original hard
+     market-quality checks as a base-rate sample;
+   - separately records the cost-first subset possible with one global BTC/ETH/SOL position;
+   - uses a 180-minute horizon, 10 bps default round-trip cost and a 2-ATR stop for the executable subset;
+   - has no `DecisionPacket`, LLM call, risk-enveloping or order interface.
+7. Position Guardian with state transitions, MFE/MAE, green-to-red tracking, dynamic profit floor and `EV_HOLD` versus `EV_CLOSE`.
+8. Quant Expert based on comparable outcomes and uncertainty, never a BUY score.
+9. Multi-provider LLM router with a conservative challenger and deterministic fallback when API keys are absent.
+10. Daily Supervisor endpoint for n8n, with evidence gates and draft-PR-only GitHub access.
+11. PostgreSQL append-only audit ledger and service health endpoints.
+
+Public `userFills` and `userFundings` events are normalized and deduplicated in
+`v2_observed_fills` and `v2_observed_fundings`. The report
+`sql/execution_cost_report.sql` measures actual fee bps, maker/taker mix,
+funding and approximate slippage against the nearest prior V2 mid.
 
 The two entry engines share an entry-decision lock and cooldown, so only one new-risk decision packet can be routed at a time. Failed-breakout short observations are matured directionally: a falling price produces a positive return for a short thesis rather than being measured as a long return.
 
@@ -44,6 +56,23 @@ V2_ENTRY_DECISION_COOLDOWN_SECONDS=60
 ```
 
 These values only define the risk envelope supplied to the shadow LLM decision packet. V2 still has no signing or order-sending path.
+
+## Tactical-fade research
+
+```bash
+V2_TACTICAL_FADE_SHADOW_ENABLED=true
+V2_ROUND_TRIP_COST_BPS=10
+```
+
+The enable flag controls data collection only. Direction, signal definition,
+portfolio lock and 180-minute horizon are deliberately not environment-tunable.
+Results are split between `tactical_fade_base_rate` and
+`tactical_fade_portfolio_selected`; only the latter is globally
+non-overlapping. See `docs/TACTICAL_FADE_SHADOW.md` and
+`sql/tactical_fade_shadow_report.sql`.
+
+The implementation decision against the attached draft is documented in
+`docs/DRAFT_REVIEW_2026-07-25.md`.
 
 ## Local run
 

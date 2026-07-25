@@ -55,6 +55,7 @@ class Settings:
     failed_breakout_replay_enabled: bool
     failed_breakout_risk_fraction: float
     failed_breakout_max_effective_exposure: float
+    tactical_fade_shadow_enabled: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -128,5 +129,9 @@ class Settings:
             failed_breakout_max_effective_exposure=_float(
                 "V2_FAILED_BREAKOUT_MAX_EFFECTIVE_EXPOSURE",
                 0.20,
+            ),
+            tactical_fade_shadow_enabled=_bool(
+                "V2_TACTICAL_FADE_SHADOW_ENABLED",
+                True,
             ),
         )

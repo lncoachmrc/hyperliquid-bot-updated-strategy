@@ -14,6 +14,8 @@ The V2 is not an ensemble of indicators. Each service owns one falsifiable respo
 - **Execution Service:** the only service allowed to hold the signing key.
 - **Supervisor:** audits, proposes one causal change on a branch and opens a PR. It cannot merge or deploy.
 - **n8n:** schedules and orchestrates slow workflows; it is never in the real-time trading path.
+- **Shadow Research Streams:** record falsifiable counterfactuals and observed
+  execution costs. They have no DecisionPacket or order contract.
 
 ```mermaid
 flowchart TD
@@ -58,6 +60,12 @@ flowchart TD
 8. In shadow mode the action is stored but never sent to Hyperliquid.
 9. When a position exists, the Position Guardian updates every few seconds and emits an LLM review only on an economic state transition.
 10. Exit logic compares `EV_HOLD` with `EV_CLOSE` and a dynamic profit floor; it does not use a fixed positive-duration timer.
+
+The tactical-fade research stream is deliberately outside the decision path.
+It records a fixed short counterfactual for eligible adverse-regime tactical
+rallies, plus a separate globally locked portfolio series. Public fills and
+fundings are normalized into deduplicated cost tables so prospective results
+can replace assumed costs with observed fee, funding and slippage evidence.
 
 ## Supervisor lifecycle
 

@@ -10,6 +10,10 @@ from typing import Any
 from hyperliquid_v2.domain.models import DecisionAction, DecisionPacket
 from hyperliquid_v2.llm_router.async_router import AsyncModelRouter, RoutedDecision
 from hyperliquid_v2.llm_router.providers import build_provider
+from hyperliquid_v2.market_data.account_equity import (
+    enrich_account_state,
+    resolution_from_account_state,
+)
 from hyperliquid_v2.market_data.features import FeatureEngine, FeatureSnapshot
 from hyperliquid_v2.market_data.hyperliquid import (
     HyperliquidReadOnlyClient,
@@ -128,6 +132,7 @@ class ShadowService:
             "1m": 12 * 60 * 60 * 1000,
             "15m": 14 * 24 * 60 * 60 * 1000,
             "1h": 45 * 24 * 60 * 60 * 1000,
+            "1d": 400 * 24 * 60 * 60 * 1000,
         }
         for symbol in self.settings.symbols:
             for interval, lookback in lookbacks.items():
@@ -163,15 +168,38 @@ class ShadowService:
         elif channel == "activeAssetCtx":
             self.features.update_asset_context(data, now_ms)
         elif channel == "clearinghouseState" and isinstance(data, dict):
-            self.account_state = data.get("clearinghouseState") or data
+            perp_state = data.get("clearinghouseState") or data
+            spot_state = self.account_state.get(
+                "_spot_clearinghouse_state"
+            )
+            account_mode = str(
+                self.account_state.get("_account_mode") or "unknown"
+            )
+            self.account_state = enrich_account_state(
+                perp_state if isinstance(perp_state, dict) else {},
+                spot_state if isinstance(spot_state, dict) else {},
+                account_mode,
+            )
         elif channel == "openOrders":
             if isinstance(data, dict):
                 data = data.get("orders") or data.get("openOrders") or []
             self.open_orders = data if isinstance(data, list) else []
         elif channel == "userFills":
-            self.account_aux["fills"] = _bounded_events(data)
+            events = _bounded_events(data)
+            self.account_aux["fills"] = events
+            await self._after_account_events(
+                "fills",
+                events,
+                datetime.now(timezone.utc),
+            )
         elif channel == "userFundings":
-            self.account_aux["fundings"] = _bounded_events(data)
+            events = _bounded_events(data)
+            self.account_aux["fundings"] = events
+            await self._after_account_events(
+                "fundings",
+                events,
+                datetime.now(timezone.utc),
+            )
 
     async def _account_poll_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -192,12 +220,14 @@ class ShadowService:
         self.open_orders = orders
         if persist:
             now = datetime.now(timezone.utc)
+            resolution = resolution_from_account_state(account)
             await self.repository.save_account_state(
                 now,
                 self.settings.wallet_address,
-                account_equity(account),
+                resolution.equity_usd,
                 {
                     "account": account,
+                    "equity_resolution": resolution.to_dict(),
                     "open_orders": orders,
                     "auxiliary_events": self.account_aux,
                 },
@@ -234,6 +264,7 @@ class ShadowService:
         self.last_feature_at = now
         if snapshots:
             await self.repository.mature_quant_samples(now, {symbol: item.mid_price for symbol, item in snapshots.items()})
+            await self._after_quant_maturation(snapshots, now)
         positions = parse_positions(self.account_state, self.mids)
         active_symbols = {position["symbol"] for position in positions}
         await self._finalize_disappeared_positions(active_symbols)
@@ -256,7 +287,14 @@ class ShadowService:
         candidates: list[tuple[float, FeatureSnapshot, Any, Any, Any, str]] = []
         for symbol, feature in snapshots.items():
             pump = self.momentum.assess(feature)
-            lows = tuple(candle.low for candle in self.features.candles(symbol, "15m")[-3:])
+            lows = tuple(
+                candle.low
+                for candle in self.features.completed_candles(
+                    symbol,
+                    "15m",
+                    feature.observed_at_ms,
+                )[-3:]
+            )
             assessment = self.opportunity.assess(feature, pump, lows)
             if assessment.setup_family and assessment.stop_distance_pct:
                 sample_key = self._entry_sample_key(feature, assessment.setup_family)
@@ -440,9 +478,27 @@ class ShadowService:
                 )
 
     def _entry_sample_key(self, feature: FeatureSnapshot, setup_family: str) -> str:
-        candles = self.features.candles(feature.symbol, "15m")
-        bar = candles[-1].open_time_ms if candles else feature.observed_at_ms // 900_000 * 900_000
+        bar = (
+            feature.completed_15m_open_time_ms
+            if feature.completed_15m_open_time_ms is not None
+            else feature.observed_at_ms // 900_000 * 900_000
+        )
         return f"entry|{feature.symbol}|{setup_family}|{bar}"
+
+    async def _after_quant_maturation(
+        self,
+        snapshots: dict[str, FeatureSnapshot],
+        now: datetime,
+    ) -> None:
+        """Operational subclasses may append non-executable research samples."""
+
+    async def _after_account_events(
+        self,
+        event_type: str,
+        events: list[Any],
+        observed_at: datetime,
+    ) -> None:
+        """Operational subclasses may normalize public account events."""
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         try:
@@ -458,6 +514,7 @@ class ShadowService:
                 LOGGER.exception("Provider close failed")
 
     def runtime_status(self) -> dict[str, Any]:
+        equity = resolution_from_account_state(self.account_state)
         return {
             "mode": "shadow",
             "live_trading_enabled": False,
@@ -467,6 +524,7 @@ class ShadowService:
             "last_websocket_at": self.last_ws_at.isoformat() if self.last_ws_at else None,
             "last_feature_at": self.last_feature_at.isoformat() if self.last_feature_at else None,
             "open_positions": [position["symbol"] for position in parse_positions(self.account_state, self.mids)],
+            "equity": equity.to_dict(),
             "primary_provider": getattr(self.primary, "name", "unknown"),
             "primary_model": getattr(self.primary, "model", "unknown"),
             "challenger_provider": getattr(self.challenger, "name", None),
