@@ -19,6 +19,7 @@ concurrency:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   validate:
@@ -62,6 +63,27 @@ jobs:
     timeout-minutes: 30
     environment: production
     steps:
+      - name: Mark V2 shadow deployment pending
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -n \
+            --arg state pending \
+            --arg context 'v2-shadow - hyperliquid-v2-shadow' \
+            --arg description 'Validating and deploying isolated non-executable V2 shadow' \
+            --arg target_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${COMMIT_SHA}" \
+            --data "$payload"
+
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -115,3 +137,32 @@ jobs:
             --environment production \
             --limit 1 \
             --json || true
+
+      - name: Publish final V2 shadow deployment status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          state=failure
+          description='V2 shadow deployment failed; V1 was not targeted'
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            state=success
+            description='V2 shadow deployed successfully with live trading disabled'
+          fi
+          payload="$(jq -n \
+            --arg state "$state" \
+            --arg context 'v2-shadow - hyperliquid-v2-shadow' \
+            --arg description "$description" \
+            --arg target_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${COMMIT_SHA}" \
+            --data "$payload"
