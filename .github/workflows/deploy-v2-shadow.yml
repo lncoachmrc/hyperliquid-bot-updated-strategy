@@ -182,13 +182,62 @@ jobs:
             V2_ROUND_TRIP_COST_BPS=10
 
       - name: Upload and deploy only the V2 directory
+        id: railway_up
+        working-directory: v2
         shell: bash
         run: |
-          set -euo pipefail
-          railway up v2 \
+          set +e
+          railway up . \
             --path-as-root \
             --service v2-shadow \
-            --environment production
+            --environment production \
+            --ci \
+            --verbose 2>&1 | tee "$RUNNER_TEMP/railway-v2-shadow.log"
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect Railway diagnostics after a failed upload
+        if: steps.railway_up.outputs.exit_code != '0'
+        shell: bash
+        run: |
+          set +e
+          railway deployment list \
+            --service v2-shadow \
+            --environment production \
+            --limit 3 \
+            --json > "$RUNNER_TEMP/railway-v2-deployments.json" 2>&1
+          railway logs \
+            --service v2-shadow \
+            --environment production \
+            --latest \
+            --build \
+            --lines 250 > "$RUNNER_TEMP/railway-v2-build.log" 2>&1
+          railway logs \
+            --service v2-shadow \
+            --environment production \
+            --latest \
+            --deployment \
+            --lines 250 > "$RUNNER_TEMP/railway-v2-runtime.log" 2>&1
+          exit 0
+
+      - name: Upload Railway diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-v2-shadow-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/railway-v2-shadow.log
+            ${{ runner.temp }}/railway-v2-deployments.json
+            ${{ runner.temp }}/railway-v2-build.log
+            ${{ runner.temp }}/railway-v2-runtime.log
+
+      - name: Fail when Railway upload failed
+        if: steps.railway_up.outputs.exit_code != '0'
+        shell: bash
+        run: exit 1
 
       - name: Record latest deployment state
         if: always()
