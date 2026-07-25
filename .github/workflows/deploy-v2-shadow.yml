@@ -1,0 +1,117 @@
+name: Deploy V2 Shadow to Railway
+
+on:
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/deploy-v2-shadow.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "v2/**"
+      - ".github/workflows/deploy-v2-shadow.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-v2-shadow-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate shadow-only V2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install V2 with test dependencies
+        run: python -m pip install -q -e 'v2[dev]'
+
+      - name: Compile V2
+        run: python -m compileall -q v2/src v2/tests
+
+      - name: Run V2 regression suite
+        run: pytest -q v2/tests
+
+      - name: Enforce non-executable safety boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R "PRIVATE_KEY" v2/src
+          ! grep -R "market_open\|market_close\|exchange\.order" v2/src
+          grep -q 'V2_SHADOW_ONLY", True' v2/src/hyperliquid_v2/runtime/settings.py
+          grep -q 'V2_LIVE_TRADING_ENABLED", False' v2/src/hyperliquid_v2/runtime/settings.py
+          grep -q 'V2_TACTICAL_FADE_SHADOW_ENABLED", True' v2/src/hyperliquid_v2/runtime/settings.py
+
+  deploy:
+    name: Deploy only v2-shadow
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Railway project token
+        shell: bash
+        env:
+          V2_RAILWAY_TOKEN: ${{ secrets.V2_RAILWAY_TOKEN }}
+          FALLBACK_RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          token="$V2_RAILWAY_TOKEN"
+          if [[ -z "$token" ]]; then
+            token="$FALLBACK_RAILWAY_TOKEN"
+          fi
+          if [[ -z "$token" ]]; then
+            echo "::error::Missing V2_RAILWAY_TOKEN (preferred) or RAILWAY_TOKEN repository secret."
+            exit 1
+          fi
+          echo "RAILWAY_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Install Railway CLI
+        run: npm install --global @railway/cli
+
+      - name: Reassert hard shadow variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          railway variable set \
+            --service v2-shadow \
+            --environment production \
+            V2_SHADOW_ONLY=true \
+            V2_LIVE_TRADING_ENABLED=false \
+            V2_TACTICAL_FADE_SHADOW_ENABLED=true \
+            V2_ROUND_TRIP_COST_BPS=10
+
+      - name: Upload and deploy only the V2 directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          railway up v2 \
+            --path-as-root \
+            --service v2-shadow \
+            --environment production
+
+      - name: Record latest deployment state
+        if: always()
+        shell: bash
+        run: |
+          railway deployment list \
+            --service v2-shadow \
+            --environment production \
+            --limit 1 \
+            --json || true
