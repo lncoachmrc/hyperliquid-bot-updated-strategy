@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from hyperliquid_v2.market_data.execution_costs import (
+    normalize_fill,
+    normalize_funding,
+)
 from hyperliquid_v2.storage.postgres import PostgresRepository, _float, _json
 
 
@@ -41,6 +45,44 @@ CREATE INDEX IF NOT EXISTS idx_v2_failed_breakout_status
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_failed_breakout_source_sample
     ON v2_failed_breakout_events(source_sample_key)
     WHERE source_sample_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS v2_observed_fills (
+    fill_key TEXT PRIMARY KEY,
+    observed_at TIMESTAMPTZ NOT NULL,
+    exchange_time TIMESTAMPTZ,
+    symbol TEXT NOT NULL,
+    side TEXT,
+    direction TEXT,
+    price NUMERIC(30, 10) NOT NULL,
+    size NUMERIC(30, 10) NOT NULL,
+    notional_usd NUMERIC(30, 10) NOT NULL,
+    fee_usd NUMERIC(30, 10),
+    fee_bps NUMERIC(20, 10),
+    builder_fee_usd NUMERIC(30, 10),
+    fee_token TEXT,
+    is_maker BOOLEAN,
+    closed_pnl_usd NUMERIC(30, 10),
+    order_id TEXT,
+    transaction_hash TEXT,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v2_observed_fills_time
+    ON v2_observed_fills(exchange_time DESC);
+CREATE INDEX IF NOT EXISTS idx_v2_observed_fills_symbol_time
+    ON v2_observed_fills(symbol, exchange_time DESC);
+
+CREATE TABLE IF NOT EXISTS v2_observed_fundings (
+    funding_key TEXT PRIMARY KEY,
+    observed_at TIMESTAMPTZ NOT NULL,
+    exchange_time TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    funding_rate NUMERIC(30, 16),
+    position_size NUMERIC(30, 10),
+    funding_usd NUMERIC(30, 10) NOT NULL,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v2_observed_fundings_symbol_time
+    ON v2_observed_fundings(symbol, exchange_time DESC);
 """
 
 
@@ -86,6 +128,96 @@ class OperationalPostgresRepository(PostgresRepository):
             source,
             _json(payload),
         )
+
+    async def save_observed_fills(
+        self,
+        events: list[Any],
+        observed_at: datetime,
+    ) -> int:
+        records = [
+            record
+            for event in events
+            if (record := normalize_fill(event, observed_at)) is not None
+        ]
+        if not records:
+            return 0
+        await self._require_pool().executemany(
+            """
+            INSERT INTO v2_observed_fills(
+                fill_key, observed_at, exchange_time, symbol,
+                side, direction, price, size, notional_usd,
+                fee_usd, fee_bps, builder_fee_usd,
+                fee_token, is_maker, closed_pnl_usd,
+                order_id, transaction_hash, payload
+            ) VALUES(
+                $1, $2, $3, $4, $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14, $15, $16,
+                $17, $18::jsonb
+            )
+            ON CONFLICT(fill_key) DO NOTHING;
+            """,
+            [
+                (
+                    record["fill_key"],
+                    record["observed_at"],
+                    record["exchange_time"],
+                    record["symbol"],
+                    record["side"],
+                    record["direction"],
+                    record["price"],
+                    record["size"],
+                    record["notional_usd"],
+                    record["fee_usd"],
+                    record["fee_bps"],
+                    record["builder_fee_usd"],
+                    record["fee_token"],
+                    record["is_maker"],
+                    record["closed_pnl_usd"],
+                    record["order_id"],
+                    record["transaction_hash"],
+                    _json(record["payload"]),
+                )
+                for record in records
+            ],
+        )
+        return len(records)
+
+    async def save_observed_fundings(
+        self,
+        events: list[Any],
+        observed_at: datetime,
+    ) -> int:
+        records = [
+            record
+            for event in events
+            if (record := normalize_funding(event, observed_at)) is not None
+        ]
+        if not records:
+            return 0
+        await self._require_pool().executemany(
+            """
+            INSERT INTO v2_observed_fundings(
+                funding_key, observed_at, exchange_time,
+                symbol, funding_rate, position_size,
+                funding_usd, payload
+            ) VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+            ON CONFLICT(funding_key) DO NOTHING;
+            """,
+            [
+                (
+                    record["funding_key"],
+                    record["observed_at"],
+                    record["exchange_time"],
+                    record["symbol"],
+                    record["funding_rate"],
+                    record["position_size"],
+                    record["funding_usd"],
+                    _json(record["payload"]),
+                )
+                for record in records
+            ],
+        )
+        return len(records)
 
     async def finalize_quant_sample(
         self,
@@ -134,6 +266,14 @@ class OperationalPostgresRepository(PostgresRepository):
             stop_pct = _float(row["stop_distance_pct"]) or 0.0
             payload = row["payload"] if isinstance(row["payload"], dict) else {}
             direction = _quant_direction(payload)
+            horizon_minutes = _positive_int(
+                payload.get("horizon_minutes"),
+                180,
+            )
+            horizon_seconds = horizon_minutes * 60
+            exit_policy = str(
+                payload.get("exit_policy") or "stop_or_horizon"
+            )
             raw_return_pct = (price / baseline - 1.0) * 100.0
             return_pct = raw_return_pct if direction == "long" else -raw_return_pct
             current_r = return_pct / stop_pct if stop_pct > 0 else None
@@ -151,15 +291,23 @@ class OperationalPostgresRepository(PostgresRepository):
             if current_r is not None:
                 mfe = max(mfe if mfe is not None else current_r, current_r)
                 mae = min(mae if mae is not None else current_r, current_r)
-            completed = age >= 10800 and return_180m is not None
+            stop_hit = bool(
+                exit_policy == "stop_or_horizon"
+                and current_r is not None
+                and current_r <= -1.0
+            )
+            horizon_complete = age >= horizon_seconds
+            completed = stop_hit or horizon_complete
             realized_net_r = None
             if completed and stop_pct > 0:
-                cost_bps = float(payload.get("round_trip_cost_bps") or 10.0)
+                cost_bps = _float(payload.get("round_trip_cost_bps"))
+                if cost_bps is None:
+                    cost_bps = 10.0
                 cost_r = (cost_bps / 100.0) / stop_pct
                 realized_net_r = (
                     -1.0 - cost_r
-                    if mae is not None and mae <= -1.0
-                    else return_180m / stop_pct - cost_r
+                    if stop_hit
+                    else return_pct / stop_pct - cost_r
                 )
             await pool.execute(
                 """
@@ -188,6 +336,37 @@ class OperationalPostgresRepository(PostgresRepository):
             )
             changed += 1
         return changed
+
+    async def has_active_quant_source(self, source: str) -> bool:
+        """Return whether a global counterfactual position is still open."""
+        return bool(
+            await self._require_pool().fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM v2_quant_observations
+                    WHERE source=$1
+                      AND completed IS FALSE
+                      AND observed_at >= NOW() - INTERVAL '24 hours'
+                );
+                """,
+                source,
+            )
+        )
+
+    async def quant_sample_exists(self, sample_key: str) -> bool:
+        return bool(
+            await self._require_pool().fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM v2_quant_observations
+                    WHERE sample_key=$1
+                );
+                """,
+                sample_key,
+            )
+        )
 
     async def failed_breakout_processed_keys(self) -> set[str]:
         rows = await self._require_pool().fetch(
@@ -333,6 +512,55 @@ class OperationalPostgresRepository(PostgresRepository):
             """
         )
         metrics["failed_breakout"] = dict(summary or {})
+        tactical_fade = await self._require_pool().fetch(
+            """
+            SELECT source,
+                   COUNT(*) AS samples,
+                   COUNT(*) FILTER (WHERE completed) AS completed,
+                   AVG(realized_net_r)
+                       FILTER (WHERE completed) AS avg_net_r,
+                   AVG(
+                       CASE WHEN realized_net_r > 0 THEN 1.0 ELSE 0.0 END
+                   ) FILTER (WHERE completed) AS win_rate,
+                   COUNT(DISTINCT symbol)
+                       FILTER (WHERE completed) AS symbols
+            FROM v2_quant_observations
+            WHERE source IN (
+                'tactical_fade_base_rate',
+                'tactical_fade_portfolio_selected'
+            )
+            GROUP BY source
+            ORDER BY source;
+            """
+        )
+        metrics["tactical_fade_shadow"] = [
+            dict(row) for row in tactical_fade
+        ]
+        observed_costs = await self._require_pool().fetchrow(
+            """
+            SELECT COUNT(*) AS fills,
+                   AVG(fee_bps) AS avg_fee_bps,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (
+                       ORDER BY fee_bps
+                   ) AS median_fee_bps,
+                   AVG(CASE WHEN is_maker THEN 1.0 ELSE 0.0 END)
+                       FILTER (WHERE is_maker IS NOT NULL) AS maker_rate,
+                   SUM(fee_usd) AS total_fee_usd,
+                   SUM(builder_fee_usd) AS total_builder_fee_usd
+            FROM v2_observed_fills;
+            """
+        )
+        funding_costs = await self._require_pool().fetchrow(
+            """
+            SELECT COUNT(*) AS events,
+                   SUM(funding_usd) AS total_funding_usd
+            FROM v2_observed_fundings;
+            """
+        )
+        metrics["observed_execution_costs"] = {
+            "fills": dict(observed_costs or {}),
+            "funding": dict(funding_costs or {}),
+        }
         return metrics
 
 
@@ -366,3 +594,11 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, parsed)

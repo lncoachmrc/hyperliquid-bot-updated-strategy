@@ -10,6 +10,12 @@ from typing import Any
 import httpx
 import websockets
 
+from hyperliquid_v2.market_data.account_equity import (
+    enrich_account_state,
+    normalize_account_mode,
+    resolution_from_account_state,
+)
+
 LOGGER = logging.getLogger(__name__)
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -31,6 +37,8 @@ class HyperliquidReadOnlyClient:
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(20.0, connect=10.0)
         )
+        self._account_mode = "unknown"
+        self._account_mode_checked_at = 0.0
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -65,13 +73,55 @@ class HyperliquidReadOnlyClient:
         return result if isinstance(result, list) else []
 
     async def account_state(self) -> dict[str, Any]:
-        result = await self.info(
+        perp_state = await self.info(
             {
                 "type": "clearinghouseState",
                 "user": self.wallet_address,
             }
         )
-        return result if isinstance(result, dict) else {}
+        if not isinstance(perp_state, dict):
+            perp_state = {}
+        mode_result, spot_result = await asyncio.gather(
+            self._cached_account_mode(),
+            self._safe_info(
+                {
+                    "type": "spotClearinghouseState",
+                    "user": self.wallet_address,
+                }
+            ),
+        )
+        spot_state = spot_result if isinstance(spot_result, dict) else {}
+        return enrich_account_state(perp_state, spot_state, mode_result)
+
+    async def _cached_account_mode(self) -> str:
+        now = time.monotonic()
+        if (
+            self._account_mode_checked_at > 0
+            and now - self._account_mode_checked_at < 300
+        ):
+            return self._account_mode
+        result = await self._safe_info(
+            {
+                "type": "userAbstraction",
+                "user": self.wallet_address,
+            }
+        )
+        mode = normalize_account_mode(result)
+        if mode != "unknown" or self._account_mode_checked_at <= 0:
+            self._account_mode = mode
+        self._account_mode_checked_at = now
+        return self._account_mode
+
+    async def _safe_info(self, payload: dict[str, Any]) -> Any:
+        try:
+            return await self.info(payload)
+        except Exception:  # noqa: BLE001
+            LOGGER.warning(
+                "Optional Hyperliquid info request failed type=%s",
+                payload.get("type"),
+                exc_info=True,
+            )
+            return None
 
     async def open_orders(self) -> list[dict[str, Any]]:
         result = await self.info(
@@ -147,6 +197,7 @@ class HyperliquidReadOnlyClient:
                     {"type": "candle", "coin": symbol, "interval": "1m"},
                     {"type": "candle", "coin": symbol, "interval": "15m"},
                     {"type": "candle", "coin": symbol, "interval": "1h"},
+                    {"type": "candle", "coin": symbol, "interval": "1d"},
                     {"type": "activeAssetCtx", "coin": symbol},
                 ]
             )
@@ -210,15 +261,7 @@ def parse_positions(
 
 
 def account_equity(account_state: dict[str, Any]) -> float:
-    summary = (
-        account_state.get("marginSummary")
-        or account_state.get("crossMarginSummary")
-        or {}
-    )
-    try:
-        return float(summary.get("accountValue") or 0)
-    except (TypeError, ValueError):
-        return 0.0
+    return resolution_from_account_state(account_state).equity_usd
 
 
 def find_protective_stop(
