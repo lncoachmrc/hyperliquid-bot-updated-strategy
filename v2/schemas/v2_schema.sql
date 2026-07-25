@@ -118,6 +118,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_failed_breakout_source_sample
     ON v2_failed_breakout_events(source_sample_key)
     WHERE source_sample_key IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS v2_observed_fills (
+    fill_key TEXT PRIMARY KEY,
+    observed_at TIMESTAMPTZ NOT NULL,
+    exchange_time TIMESTAMPTZ,
+    symbol TEXT NOT NULL,
+    side TEXT,
+    direction TEXT,
+    price NUMERIC(30,10) NOT NULL,
+    size NUMERIC(30,10) NOT NULL,
+    notional_usd NUMERIC(30,10) NOT NULL,
+    fee_usd NUMERIC(30,10),
+    fee_bps NUMERIC(20,10),
+    builder_fee_usd NUMERIC(30,10),
+    fee_token TEXT,
+    is_maker BOOLEAN,
+    closed_pnl_usd NUMERIC(30,10),
+    order_id TEXT,
+    transaction_hash TEXT,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v2_observed_fills_time
+    ON v2_observed_fills(exchange_time DESC);
+CREATE INDEX IF NOT EXISTS idx_v2_observed_fills_symbol_time
+    ON v2_observed_fills(symbol, exchange_time DESC);
+
+CREATE TABLE IF NOT EXISTS v2_observed_fundings (
+    funding_key TEXT PRIMARY KEY,
+    observed_at TIMESTAMPTZ NOT NULL,
+    exchange_time TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    funding_rate NUMERIC(30,16),
+    position_size NUMERIC(30,10),
+    funding_usd NUMERIC(30,10) NOT NULL,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v2_observed_fundings_symbol_time
+    ON v2_observed_fundings(symbol, exchange_time DESC);
+
 CREATE TABLE IF NOT EXISTS v2_service_heartbeats (
     service_name TEXT PRIMARY KEY,
     observed_at TIMESTAMPTZ NOT NULL,
